@@ -1291,10 +1291,12 @@ async def main():
             # rdeal = ('T962.86.K742.643 KJ43.Q9.QT9.T852 .AJT7532.AJ8.QJ7 AQ875.K4.653.AK9', 'N E-W')
 
             print(f"{Fore.CYAN}Playing Board: {rdeal}{Fore.RESET}")
+            recommendation = None
             driver.set_deal(None, *rdeal, False, bidding_only=biddingonly)
         else:
             rdeal = boards[board_no[0]]['deal']
             auction = boards[board_no[0]]['auction']
+            recommendation = boards[board_no[0]].get('recommendation')
             print(f"{Fore.LIGHTBLUE_EX}Board: {board_no[0]+1} {rdeal}{Fore.RESET}")
             #print("auction",auction)
             driver.set_deal(board_no[0] + 1, rdeal, auction, play_only=playonly, bidding_only=biddingonly)
@@ -1308,6 +1310,8 @@ async def main():
         score = 0
         imps = 0
         if facit:        
+            if recommendation:
+                print(f"{Fore.LIGHTCYAN_EX}Recommended auction: {recommendation}{Style.RESET_ALL}")
             if driver.facit_score == None:
                 print("No score table provided")
             else:
