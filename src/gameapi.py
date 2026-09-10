@@ -246,7 +246,7 @@ def play_api(dealer_i, vuln_ns, vuln_ew, hands, models, sampler, contract, strai
                         strain_i=strain_i,
                         player_i=player_i,
                         hands52=[card_player.hand52 for card_player in card_players],
-                        n_samples=1,
+                        n_samples=0,
                         hidden_cards=deck,
                         current_trick=current_trick52
                     )
