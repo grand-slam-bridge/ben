@@ -184,8 +184,6 @@ class CardPlayer:
     def merge_candidate_cards(self, pimc_resp, dd_resp, engine, weight, quality):
         merged_cards = {}
 
-        if quality < self.models.pimc_bidding_quality:
-            weight = 0.5
 
         for card52, (e_tricks, e_score, e_make, msg) in dd_resp.items():
             if card52 in pimc_resp:
@@ -362,10 +360,7 @@ class CardPlayer:
                     #print(pimc_resp_cards)
                     dd_resp_cards, claims = self.get_cards_dd_evaluation(trick_i, leader_i, tricks52, current_trick52, players_states, probability_of_occurence, quality)
 
-                    if preempted and self.models.pimc_after_preempt:
-                        weight = 1 - self.models.pimc_after_preempt_weight
-                    else:
-                        weight = self.models.pimc_ben_dd_declaring_weight
+weight = self.models.pimc_ben_dd_declaring_weight
                     merged_card_resp = self.merge_candidate_cards(pimc_resp_cards, dd_resp_cards, "PIMC", weight, quality)
                 else:
                     merged_card_resp = pimc_resp_cards
