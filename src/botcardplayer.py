@@ -360,7 +360,7 @@ class CardPlayer:
                     #print(pimc_resp_cards)
                     dd_resp_cards, claims = self.get_cards_dd_evaluation(trick_i, leader_i, tricks52, current_trick52, players_states, probability_of_occurence, quality)
 
-weight = self.models.pimc_ben_dd_declaring_weight
+                    weight = self.models.pimc_ben_dd_declaring_weight
                     merged_card_resp = self.merge_candidate_cards(pimc_resp_cards, dd_resp_cards, "PIMC", weight, quality)
                 else:
                     merged_card_resp = pimc_resp_cards
