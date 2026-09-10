@@ -3,6 +3,7 @@ import deck52
 import random
 import numpy as np
 from itertools import combinations
+from math import comb
 
 class Claimer:
 
@@ -209,15 +210,39 @@ class Claimer:
             n_cards = (len(hidden_cards) + 1) // 2
         if self.verbose:
             print(f"Claimapi: Cards for player RHO {n_cards} {hidden_hand_indexes} {seen_hand_indexes}")
-        for i in range(n_samples):
-            np.random.shuffle(hidden_cards)
-            hands[hidden_hand_indexes[1]] = deck52.deal_to_str(_hand_from_cards(52, hidden_cards[:n_cards]))
-            hands[hidden_hand_indexes[0]] = deck52.deal_to_str(_hand_from_cards(52, hidden_cards[n_cards:]))
+        MAX_EXHAUSTIVE_CLAIM_WORLDS = 20000
+        total_worlds = comb(len(hidden_cards), n_cards)
+
+        if total_worlds > MAX_EXHAUSTIVE_CLAIM_WORLDS:
+            if self.verbose:
+                print(
+                    f"Claimapi: {total_worlds} possible hidden-card worlds exceeds "
+                    f"safe exhaustive limit {MAX_EXHAUSTIVE_CLAIM_WORLDS}; "
+                    f"reject conservatively."
+                )
+            return -1
+
+        hidden_card_set = set(hidden_cards)
+
+        for chosen_combination in combinations(hidden_cards, n_cards):
+            chosen_set = set(chosen_combination)
+            remaining_cards = list(hidden_card_set - chosen_set)
+
+            hands[hidden_hand_indexes[1]] = deck52.deal_to_str(
+                _hand_from_cards(52, list(chosen_combination))
+            )
+
+            hands[hidden_hand_indexes[0]] = deck52.deal_to_str(
+                _hand_from_cards(52, remaining_cards)
+            )
 
             sampled_hands_pbn.append('N:' + ' '.join(hands))
 
         if self.verbose:
-            print(f"Claimapi for player {player_i} {sampled_hands_pbn}")
+            print(
+                f"Claimapi exhaustive check for player {player_i}: "
+                f"{len(sampled_hands_pbn)} worlds"
+            )
 
         max_min_tricks = self._get_max_min_tricks(strain_i, player_i, sampled_hands_pbn, current_trick)
         
