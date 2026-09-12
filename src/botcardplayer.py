@@ -160,8 +160,9 @@ class CardPlayer:
         else:
             self.pimc_declaring = self.models.pimc_use_declaring and trick_i >= (self.models.pimc_start_trick_declarer - 1) and trick_i < (self.models.pimc_stop_trick_declarer)
 
-            # Live-play optimization: if PIMC is merged with BEN DD at weight 0,
-            # it cannot affect the result, so do not run it.
+            # Live-play optimization:
+            # PIMC cannot influence the final merged result when BEN-DD weight is 100%
+            # (PIMC merge weight == 0), so skip the PIMC engine entirely.
             if (
                 self.pimc_declaring
                 and getattr(self.models, "pimc_ben_dd_declaring", False)

@@ -76,6 +76,7 @@ from flask import Flask, Response, request, jsonify, abort
 from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
 import json
+import copy
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from threading import Lock
@@ -443,6 +444,16 @@ def str_to_bool(value):
         return False
     raise ValueError("Invalid boolean value")
 
+def query_bool(value, default=False):
+    """Parse an optional HTTP query-string boolean safely.
+
+    Flask query parameters are strings, so bool("false") is True.  This helper
+    prevents details=false / fast=false from accidentally enabling a feature.
+    """
+    if value is None:
+        return default
+    return str(value).strip().lower() in ('true', '1', 't', 'y', 'yes', 'on')
+
 
 def create_auction(bids, dealer_i):
     # Convert various bid notations to standard format:
@@ -612,6 +623,16 @@ if verbose:
     print("Loading sampler")
 sampler = Sample.from_conf(configuration, verbose)
 
+# Live table bidding profile.  Full BEN analysis remains available to autoplay
+# and other callers; /bid defaults to this bounded-latency profile.
+INTERACTIVE_BIDDING_ENABLED = configuration.getboolean('interactive_bidding', 'enabled', fallback=True)
+INTERACTIVE_SAMPLE_HANDS = configuration.getint('interactive_bidding', 'sample_hands_auction', fallback=40)
+INTERACTIVE_SAMPLE_BOARDS = configuration.getint('interactive_bidding', 'sample_boards_for_auction', fallback=8000)
+INTERACTIVE_NO_SEARCH_THRESHOLD = configuration.getfloat('interactive_bidding', 'no_search_threshold', fallback=0.35)
+INTERACTIVE_DISABLE_RESCUE = configuration.getboolean('interactive_bidding', 'disable_rescue', fallback=True)
+INTERACTIVE_CACHE_TTL = configuration.getfloat('interactive_bidding', 'cache_ttl_seconds', fallback=120.0)
+INTERACTIVE_CACHE_MAX = configuration.getint('interactive_bidding', 'cache_max_entries', fallback=500)
+
 if models.use_bba:
     print("Using BBA for bidding")
 else:
@@ -711,6 +732,47 @@ limiter = Limiter(
 # Initialize the lock
 model_lock_bid = Lock()
 model_lock_play = Lock()
+
+# Cache the full result of recent /bid calculations.  Grand Slam Bridge first
+# requests the bid and then requests details for the same position; without this
+# cache BEN calculated the exact position twice.
+_bid_cache = {}
+_bid_cache_lock = Lock()
+
+def _bid_cache_key(hand, seat, dealer, vuln_text, ctx, tournament):
+    return (hand, seat, dealer, (vuln_text or '').upper(), ctx or '', (tournament or '').lower())
+
+def _bid_cache_get(key):
+    now = time.time()
+    with _bid_cache_lock:
+        item = _bid_cache.get(key)
+        if item is None:
+            return None
+        created, value = item
+        if now - created > INTERACTIVE_CACHE_TTL:
+            _bid_cache.pop(key, None)
+            return None
+        return copy.deepcopy(value)
+
+def _bid_cache_put(key, value):
+    now = time.time()
+    with _bid_cache_lock:
+        # Opportunistic expiry and size control; no background worker required.
+        expired = [k for k, (created, _) in _bid_cache.items() if now - created > INTERACTIVE_CACHE_TTL]
+        for k in expired:
+            _bid_cache.pop(k, None)
+        if len(_bid_cache) >= INTERACTIVE_CACHE_MAX:
+            oldest = min(_bid_cache.items(), key=lambda kv: kv[1][0])[0]
+            _bid_cache.pop(oldest, None)
+        _bid_cache[key] = (now, copy.deepcopy(value))
+
+def _shape_bid_response(full_result, details):
+    result = copy.deepcopy(full_result)
+    if not details:
+        for field in ('candidates', 'samples', 'shape', 'hcp', 'explanations'):
+            result.pop(field, None)
+    return result
+
 # Set up logging
 class PrefixedTimedRotatingFileHandler(TimedRotatingFileHandler):
     def __init__(self, prefix, when='midnight', interval=1, backupCount=0):
@@ -871,7 +933,9 @@ def bid():
         if request.args.get("tournament"):
             mp = request.args.get("tournament").lower() == "mp"
             models.matchpoint = mp
-        details = request.args.get("details")
+        details = query_bool(request.args.get("details"), default=False)
+        fast_arg = request.args.get("fast")
+        fast_mode = INTERACTIVE_BIDDING_ENABLED if fast_arg is None else query_bool(fast_arg, default=INTERACTIVE_BIDDING_ENABLED)
         # First we extract our hand
         hand = request.args.get("hand").replace('_','.').upper()
         if 'X' in hand:
@@ -888,6 +952,14 @@ def bid():
         dealer_i = dealer_enum[dealer]
         position_i = dealer_enum[seat]
         ctx = request.args.get("ctx")
+        tournament = request.args.get("tournament")
+        cache_key = _bid_cache_key(hand, seat, dealer, v, ctx, tournament)
+        cached_result = _bid_cache_get(cache_key)
+        if cached_result is not None:
+            result = _shape_bid_response(cached_result, details)
+            print(f'Request took {(time.time() - t_start):0.2f} seconds (bid cache hit)')
+            return json.dumps(result)
+
         bids = parse_ctx_to_bids(ctx)
         auction = create_auction(bids, dealer_i)
         if bidding.auction_over(auction):
@@ -907,20 +979,21 @@ def bid():
             explanations = None
         else:
 
-            hint_bot = BotBid(vuln, hand, models, sampler, position_i, dealer_i, dds, False, verbose)
+            hint_bot = BotBid(
+                vuln, hand, models, sampler, position_i, dealer_i, dds, False, verbose,
+                fast_mode=fast_mode,
+                interactive_sample_hands=INTERACTIVE_SAMPLE_HANDS,
+                interactive_sample_boards=INTERACTIVE_SAMPLE_BOARDS,
+                interactive_no_search_threshold=INTERACTIVE_NO_SEARCH_THRESHOLD,
+                interactive_disable_rescue=INTERACTIVE_DISABLE_RESCUE
+            )
             explanations, bba_controlled, preempted = hint_bot.explain_auction(auction)
             hint_bot.bba_is_controlling = bba_controlled
         with model_lock_bid:
             bid = hint_bot.bid(auction)
 
-        result = bid.to_dict()
-        if not details:
-            if "candidates" in result: del result["candidates"]
-            if "samples" in result: del result["samples"]
-            if "shape" in result: del result["shape"]
-            if "hcp" in result: del result["hcp"]
-        else:
-            result["explanations"] = explanations
+        full_result = bid.to_dict()
+        full_result["explanations"] = explanations
 
         # Add explanation for the recommended bid
         try:
@@ -929,18 +1002,21 @@ def bid():
                 explanation, alert = hint_bot.explain_last_bid(auction_with_bid)
             else:
                 explanation, alert = hint_bot.bbabot.explain_last_bid(auction_with_bid)
-            result["explanation"] = explanation
-            result["alert"] = str(alert)
+            full_result["explanation"] = explanation
+            full_result["alert"] = str(alert)
             # Also add explanation to the top candidate
-            if "candidates" in result and len(result["candidates"]) > 0:
-                result["candidates"][0]["explanation"] = explanation
-                result["candidates"][0]["alert"] = str(alert)
+            if "candidates" in full_result and len(full_result["candidates"]) > 0:
+                full_result["candidates"][0]["explanation"] = explanation
+                full_result["candidates"][0]["alert"] = str(alert)
         except Exception as e:
             if verbose:
                 print(f"Could not get explanation for bid: {e}")
 
+        _bid_cache_put(cache_key, full_result)
+        result = _shape_bid_response(full_result, details)
+
         if record: 
-            calculations = {"hand":hand, "vuln":vuln, "dealer":dealer, "seat":seat, "auction":auction, "bid":bid.to_dict()}
+            calculations = {"hand":hand, "vuln":vuln, "dealer":dealer, "seat":seat, "auction":auction, "bid":bid.to_dict(), "fast_mode": fast_mode}
             logger.info(f"Calculations bid: {json.dumps(calculations)}")
         print(f'Request took {(time.time() - t_start):0.2f} seconds')       
         return json.dumps(result)
