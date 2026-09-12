@@ -19,7 +19,9 @@ from nn.timing import ModelTimer
 init()
 class BotBid:
 
-    def __init__(self, vuln, hand_str, models, sampler, seat, dealer, ddsolver, bba_is_controlling, verbose):
+    def __init__(self, vuln, hand_str, models, sampler, seat, dealer, ddsolver, bba_is_controlling, verbose,
+                 fast_mode=False, interactive_sample_hands=None, interactive_sample_boards=None,
+                 interactive_no_search_threshold=None, interactive_disable_rescue=True):
         self.vuln = vuln
         self.hand_str = hand_str
         self.hand_bidding = binary.parse_hand_f(models.n_cards_bidding)(hand_str)
@@ -46,6 +48,16 @@ class BotBid:
         self.my_bid_no = 1
         self._bbabot_instance = None
         self.bba_is_controlling = bba_is_controlling
+
+        # Interactive bidding mode is intended for live table play.  It keeps the
+        # normal BEN bidding logic, but caps expensive sampling and avoids the
+        # late-auction rescue pass when requested by the API.  Defaults preserve
+        # historical behaviour for every existing caller.
+        self.fast_mode = bool(fast_mode)
+        self.interactive_sample_hands = interactive_sample_hands
+        self.interactive_sample_boards = interactive_sample_boards
+        self.interactive_no_search_threshold = interactive_no_search_threshold
+        self.interactive_disable_rescue = bool(interactive_disable_rescue)
 
     @property
     def bbabot(self):
@@ -123,6 +135,12 @@ class BotBid:
         return X
     
     def evaluate_rescue_bid(self, auction, passout, samples, candidate_bid, quality, my_bid_no ):
+        # Rescue bidding is one of the most expensive late-auction paths.
+        # Live/interactive requests can disable it without changing BEN's normal
+        # analysis/autoplay behaviour.
+        if self.fast_mode and self.interactive_disable_rescue:
+            return False
+
         # check configuration
         if self.verbose:
             print("Checking if we should evaluate rescue bid", self.models.check_final_contract, "Samples:",len(samples))
@@ -247,7 +265,18 @@ class BotBid:
         # If no search we will not generate any samples if switch of
         # if only 1 sample we drop sampling, but only if no rescue bidding
         generate_samples = not self.sampler.no_samples_when_no_search and self.get_min_candidate_score(self.my_bid_no) != -1
-        generate_samples = generate_samples or (binary.get_number_of_bids(auction) > 4 and self.models.check_final_contract)
+        # The full BEN profile deliberately forces sampling late in the auction to
+        # validate the final contract.  In interactive mode that can turn a 40 ms
+        # NN decision into several seconds of sampling/DDS work.  If rescue is
+        # disabled for the interactive request, do not force samples solely for
+        # final-contract validation; multiple genuine candidates can still trigger
+        # the normal (capped) rollout below.
+        force_final_contract_samples = (
+            binary.get_number_of_bids(auction) > 4
+            and self.models.check_final_contract
+            and not (self.fast_mode and self.interactive_disable_rescue)
+        )
+        generate_samples = generate_samples or force_final_contract_samples
         generate_samples = generate_samples or len(candidates) > 1
 
         if generate_samples:
@@ -276,7 +305,11 @@ class BotBid:
 
         # If quality = -1 we should probably just bid what BBA suggest, but even BBA might not have understood the bidding
 
-        if self.do_rollout(auction, candidates, self.get_max_candidate_score(self.my_bid_no), sample_count):
+        rollout_no_search_threshold = self.get_max_candidate_score(self.my_bid_no)
+        if self.fast_mode and self.interactive_no_search_threshold is not None:
+            rollout_no_search_threshold = self.interactive_no_search_threshold
+
+        if self.do_rollout(auction, candidates, rollout_no_search_threshold, sample_count):
             ev_candidates = []
             ev_scores = {}
             # we would like to have the same samples including pips for all calculations
@@ -1103,14 +1136,26 @@ class BotBid:
                 aceking = self.bbabot.find_aces(auction_so_far)
 
 
-        accepted_samples, sorted_scores, p_hcp, p_shp, quality, samplings = self.sampler.generate_samples_iterative(auction_so_far, turn_to_bid, self.sampler.sample_boards_for_auction, self.sampler.sample_hands_auction, self.rng, self.hand_str, self.vuln, self.models, [], aceking)
+        target_boards = self.sampler.sample_boards_for_auction
+        target_hands = self.sampler.sample_hands_auction
+        if self.fast_mode:
+            if self.interactive_sample_boards is not None:
+                target_boards = min(target_boards, int(self.interactive_sample_boards))
+            if self.interactive_sample_hands is not None:
+                target_hands = min(target_hands, int(self.interactive_sample_hands))
 
-        # We have more samples, than we want to calculate on
-        # They are sorted according to the bidding trust, but above our threshold, so we pick random
-        if accepted_samples.shape[0] >= self.sampler.sample_hands_auction:
+        accepted_samples, sorted_scores, p_hcp, p_shp, quality, samplings = self.sampler.generate_samples_iterative(
+            auction_so_far, turn_to_bid, target_boards, target_hands, self.rng,
+            self.hand_str, self.vuln, self.models, [], aceking
+        )
+
+        # We have more samples than we want to calculate on.
+        # They are sorted according to bidding trust, but above our threshold,
+        # so choose a deterministic random subset.
+        if accepted_samples.shape[0] >= target_hands:
             random_indices = self.rng.permutation(accepted_samples.shape[0])
-            accepted_samples = accepted_samples[random_indices[:self.sampler.sample_hands_auction], :, :]
-            sorted_scores = sorted_scores[random_indices[:self.sampler.sample_hands_auction]]
+            accepted_samples = accepted_samples[random_indices[:target_hands], :, :]
+            sorted_scores = sorted_scores[random_indices[:target_hands]]
         else:
             # Inform user
             if not self.models.suppress_warnings:
