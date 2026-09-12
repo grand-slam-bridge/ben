@@ -184,11 +184,16 @@ class CardPlayer:
     def merge_candidate_cards(self, pimc_resp, dd_resp, engine, weight, quality):
         merged_cards = {}
 
-        # Some native PIMC builds occasionally return an exact 0.00 expected-trick
-        # value for a legal card even while sibling legal cards have normal values.
-        # We have observed this early in a hand where BEN-DD still shows 10+ tricks.
-        # Treat that pattern as a missing/invalid PIMC result rather than allowing
-        # a bogus zero to receive 50% of the merged score.
+        # Validate the whole PIMC candidate set BEFORE mixing it with BEN-DD.
+        #
+        # Important: a per-card fallback is not safe, because that compares
+        # apples-to-oranges:
+        #   card A = 50% PIMC + 50% BEN-DD
+        #   card B = 100% BEN-DD
+        #
+        # If native PIMC returns a clearly corrupt value for ANY legal candidate,
+        # reject PIMC for this entire decision and score ALL legal candidates with
+        # BEN-DD only. This keeps every candidate on the same scale.
         finite_pimc_tricks = []
         for value in pimc_resp.values():
             try:
@@ -197,89 +202,135 @@ class CardPlayer:
                     finite_pimc_tricks.append(tricks_value)
             except (TypeError, ValueError, IndexError):
                 pass
+
         max_pimc_tricks = max(finite_pimc_tricks, default=None)
+        invalid_candidates = []
 
         for card52, (e_tricks, e_score, e_make, msg) in dd_resp.items():
-            if card52 in pimc_resp:
-                pimc_e_tricks, pimc_e_score, pimc_e_make, pimc_msg = pimc_resp[card52]
+            if card52 not in pimc_resp:
+                continue
 
-                invalid_reason = None
+            pimc_e_tricks, pimc_e_score, pimc_e_make, pimc_msg = pimc_resp[card52]
+            invalid_reason = None
+
+            try:
+                pt = float(pimc_e_tricks)
+                ps = float(pimc_e_score)
+                pm = float(pimc_e_make)
+                dd_t = float(e_tricks)
+
+                if not all(np.isfinite(v) for v in (pt, ps, pm, dd_t)):
+                    invalid_reason = "non-finite PIMC value"
+                elif pm < 0 or pm > 1:
+                    invalid_reason = "PIMC make probability outside 0..1"
+                elif pt < 0:
+                    invalid_reason = "negative PIMC expected tricks"
+                elif (
+                    pt <= 0.01
+                    and dd_t >= 2.0
+                    and max_pimc_tricks is not None
+                    and max_pimc_tricks >= 1.0
+                ):
+                    invalid_reason = "zero-trick PIMC outlier"
+            except (TypeError, ValueError):
+                invalid_reason = "unusable PIMC value"
+
+            if invalid_reason:
                 try:
-                    pt = float(pimc_e_tricks)
-                    ps = float(pimc_e_score)
-                    pm = float(pimc_e_make)
-                    dd_t = float(e_tricks)
+                    card_symbol = Card.from_code(card52).symbol()
+                except Exception:
+                    card_symbol = str(card52)
 
-                    if not all(np.isfinite(v) for v in (pt, ps, pm, dd_t)):
-                        invalid_reason = "non-finite PIMC value"
-                    elif pm < 0 or pm > 1:
-                        invalid_reason = "PIMC make probability outside 0..1"
-                    elif pt < 0:
-                        invalid_reason = "negative PIMC expected tricks"
-                    elif (
-                        pt <= 0.01
-                        and dd_t >= 2.0
-                        and max_pimc_tricks is not None
-                        and max_pimc_tricks >= 1.0
-                    ):
-                        invalid_reason = "zero-trick PIMC outlier"
-                except (TypeError, ValueError):
-                    invalid_reason = "unusable PIMC value"
+                invalid_candidates.append({
+                    "card52": card52,
+                    "card": card_symbol,
+                    "reason": invalid_reason,
+                    "pimc_tricks": pimc_e_tricks,
+                    "pimc_score": pimc_e_score,
+                    "pimc_make": pimc_e_make,
+                    "pimc_msg": pimc_msg,
+                    "ben_dd_tricks": e_tricks,
+                    "ben_dd_score": e_score,
+                    "ben_dd_make": e_make
+                })
 
-                if invalid_reason:
-                    # Fall back to BEN-DD for this card only. Other cards with sane
-                    # PIMC results still use the configured PIMC/BEN merge weight.
-                    new_e_tricks = e_tricks
-                    new_e_score = e_score
-                    new_e_make = e_make
-                    new_msg = (
-                        (msg + "|" if msg else "")
-                        + f"{engine} INVALID({invalid_reason})|"
-                        + f"RAW {pimc_e_tricks} {pimc_e_score} {pimc_e_make}|"
-                        + f"BEN DD 100%|{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
-                    )
+        reject_entire_pimc_set = len(invalid_candidates) > 0
 
-                    try:
-                        card_symbol = Card.from_code(card52).symbol()
-                    except Exception:
-                        card_symbol = str(card52)
+        if reject_entire_pimc_set:
+            print("[PIMC-GUARD-ALL]", json.dumps({
+                "engine": engine,
+                "reason": "invalid candidate detected; rejecting PIMC for entire play decision",
+                "invalid_candidates": invalid_candidates,
+                "candidate_count_dd": len(dd_resp),
+                "candidate_count_pimc": len(pimc_resp),
+                "max_pimc_tricks": max_pimc_tricks,
+                "quality": quality
+            }, default=str))
 
-                    print("[PIMC-GUARD]", json.dumps({
-                        "engine": engine,
-                        "card": card_symbol,
-                        "reason": invalid_reason,
-                        "pimc": {
-                            "tricks": pimc_e_tricks,
-                            "score": pimc_e_score,
-                            "make": pimc_e_make,
-                            "msg": pimc_msg
-                        },
-                        "ben_dd": {
-                            "tricks": e_tricks,
-                            "score": e_score,
-                            "make": e_make
-                        },
-                        "max_pimc_tricks_other_candidates": max_pimc_tricks,
-                        "quality": quality
-                    }, default=str))
+        for card52, (e_tricks, e_score, e_make, msg) in dd_resp.items():
+            if reject_entire_pimc_set:
+                # All-or-nothing protection: once PIMC proves internally invalid
+                # for this decision, every legal card uses BEN-DD 100%.
+                if card52 in pimc_resp:
+                    pimc_e_tricks, pimc_e_score, pimc_e_make, pimc_msg = pimc_resp[card52]
+                    raw_text = f"RAW {pimc_e_tricks} {pimc_e_score} {pimc_e_make}"
                 else:
-                    new_e_tricks = round((pimc_e_tricks * weight + e_tricks * (1-weight)),2) if pimc_e_tricks is not None and e_tricks is not None else None
-                    new_e_score = round((pimc_e_score * weight + e_score * (1-weight)),2) if pimc_e_score is not None and e_score is not None else None
-                    new_e_make = round((pimc_e_make * weight + e_make * (1-weight)),2) if pimc_e_make is not None and e_make is not None else None
-                    new_msg = (msg + "|" if msg else "") + engine + f" {weight*100:.0f}%|" + (pimc_msg or '')
-                    new_msg += f"|{pimc_e_tricks:.2f} {pimc_e_score:.2f} {pimc_e_make:.2f}"
-                    new_msg += f"|BEN DD {(1-weight)*100:.0f}%|"
-                    new_msg += f"{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
-            else:
-                # Card not in PIMC response, use DD values only
+                    raw_text = "RAW N/A"
+
                 new_e_tricks = e_tricks
                 new_e_score = e_score
                 new_e_make = e_make
-                new_msg = (msg + "|" if msg else "") + f"{engine} N/A|BEN DD 100%|{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
-            merged_cards[card52] = (new_e_tricks, new_e_score, new_e_make, new_msg)
+                new_msg = (
+                    (msg + "|" if msg else "")
+                    + f"{engine} SET REJECTED|{raw_text}|"
+                    + f"BEN DD 100%|{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
+                )
+
+            elif card52 in pimc_resp:
+                pimc_e_tricks, pimc_e_score, pimc_e_make, pimc_msg = pimc_resp[card52]
+
+                new_e_tricks = round(
+                    (pimc_e_tricks * weight + e_tricks * (1 - weight)), 2
+                ) if pimc_e_tricks is not None and e_tricks is not None else None
+
+                new_e_score = round(
+                    (pimc_e_score * weight + e_score * (1 - weight)), 2
+                ) if pimc_e_score is not None and e_score is not None else None
+
+                new_e_make = round(
+                    (pimc_e_make * weight + e_make * (1 - weight)), 2
+                ) if pimc_e_make is not None and e_make is not None else None
+
+                new_msg = (
+                    (msg + "|" if msg else "")
+                    + engine
+                    + f" {weight*100:.0f}%|"
+                    + (pimc_msg or "")
+                )
+                new_msg += f"|{pimc_e_tricks:.2f} {pimc_e_score:.2f} {pimc_e_make:.2f}"
+                new_msg += f"|BEN DD {(1-weight)*100:.0f}%|"
+                new_msg += f"{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
+
+            else:
+                # Card not in PIMC response: use BEN-DD only for that card.
+                new_e_tricks = e_tricks
+                new_e_score = e_score
+                new_e_make = e_make
+                new_msg = (
+                    (msg + "|" if msg else "")
+                    + f"{engine} N/A|BEN DD 100%|"
+                    + f"{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
+                )
+
+            merged_cards[card52] = (
+                new_e_tricks,
+                new_e_score,
+                new_e_make,
+                new_msg
+            )
 
         return merged_cards
-    
+
     def alphamju_evaluation(self, trick_i, play_status, leader_i, current_trick52, quality, worlds, samples, card_scores_nn):
                 # Create a lookup dictionary to find the scores
         card_nn = {c: round(s, 3) for c, s in zip(np.arange(self.models.n_cards_play), card_scores_nn)}
