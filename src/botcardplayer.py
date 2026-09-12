@@ -160,10 +160,27 @@ class CardPlayer:
         else:
             self.pimc_declaring = self.models.pimc_use_declaring and trick_i >= (self.models.pimc_start_trick_declarer - 1) and trick_i < (self.models.pimc_stop_trick_declarer)
 
+            # Live-play optimization: if PIMC is merged with BEN DD at weight 0,
+            # it cannot affect the result, so do not run it.
+            if (
+                self.pimc_declaring
+                and getattr(self.models, "pimc_ben_dd_declaring", False)
+                and float(getattr(self.models, "pimc_ben_dd_declaring_weight", 0)) <= 0
+            ):
+                self.pimc_declaring = False
+
         if ace_defending:
             self.pimc_defending = trick_i >= (getattr(self.models, 'ace_start_trick_defender', 1) - 1) and trick_i < getattr(self.models, 'ace_stop_trick_defender', 13)
         else:
             self.pimc_defending = self.models.pimc_use_defending and trick_i >= (self.models.pimc_start_trick_defender - 1) and trick_i < (self.models.pimc_stop_trick_defender)
+
+            # Same optimization for defenders.
+            if (
+                self.pimc_defending
+                and getattr(self.models, "pimc_ben_dd_defending", False)
+                and float(getattr(self.models, "pimc_ben_dd_defending_weight", 0)) <= 0
+            ):
+                self.pimc_defending = False
         if not self.pimc_defending and not self.pimc_declaring:
             return
         if self.models.pimc_constraints:
@@ -483,6 +500,8 @@ class CardPlayer:
             print("Samples:", n_samples, " Solving:",len(hands_pbn))
         
         dd_solved = self.dds.solve(self.strain_i, leader_i, current_trick52, hands_pbn, 3, purpose="play")
+        if self.verbose:
+            print(f"[PLAY-PERF] DDS samples={n_samples} took {(time.time() - t_start):0.3f}s")
         
         # if defending the target is another
         level = int(self.contract[0])
