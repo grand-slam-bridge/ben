@@ -2573,6 +2573,26 @@ def robots_txt():
 
 if __name__ == "__main__":
     print(Back.BLACK)
+    """
+    [ben-warm] EVERY MODEL IS WARMED BEFORE THE PORT OPENS (2026-10-05).
+
+    The first inference through a Keras model builds its graph, and the play
+    networks are per seat - eight of them - so each seat's first card of a session
+    used to pay its own warm-up. Live that was 1.5-6 s for the early cards of a
+    hand against under a second later on.
+
+    Deliberately BEFORE WSGIServer is constructed, so the socket is not listening
+    while this runs: a request cannot arrive early and pay the cost anyway.
+
+    Wrapped, because this is speed and not correctness. A model that will not warm
+    is logged and the service still starts; it will simply pay for that one model
+    on its first real request, which is exactly where it was before.
+    """
+    try:
+        models.warm_up_all()
+    except Exception as _warm_ex:
+        print('[ben-warm] warm-up could not run (%s: %s) - starting anyway'
+              % (type(_warm_ex).__name__, _warm_ex), flush=True)
     try:
         # Run the Flask app with gevent server
         http_server = WSGIServer((host, port), app)
