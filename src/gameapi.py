@@ -77,6 +77,7 @@ from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
 import json
 import copy
+import threading
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from threading import Lock
@@ -810,7 +811,7 @@ def _ben_slow(kind, path, total_ms, wait_ms, c):
         pass
 
 
-def _ben_time_play(path, t_lock, t_work, t_done):
+def _ben_time_play(path, t_lock, t_work, t_done, source='fresh'):
     """
     [ben-time] ONE LINE PER CARD. total_ms is the whole decision, wait_ms the part of it
     spent queueing behind another card, and sampling/dd/pimc the three stages the rest went
@@ -822,10 +823,13 @@ def _ben_time_play(path, t_lock, t_work, t_done):
     try:
         c = PlayClock.get()
         total = (t_done - t_lock) * 1000
-        print('[ben-time] play path=%s total_ms=%d wait_ms=%d sampling_ms=%d dd_ms=%d pimc_ms=%d playouts=%d' % (
-            path, total, (t_work - t_lock) * 1000,
+        print('[ben-time] play path=%s source=%s total_ms=%d wait_ms=%d sampling_ms=%d dd_ms=%d pimc_ms=%d playouts=%d' % (
+            path, source, total, (t_work - t_lock) * 1000,
             c['sampling'], c['dd'], c['pimc'], c['playouts']), flush=True)
-        _ben_slow('play', path, total, (t_work - t_lock) * 1000, c)
+        # A joined or cached answer did no work of its own, so its stage numbers are the
+        # leader's or empty; only a fresh one is worth calling slow.
+        if source == 'fresh':
+            _ben_slow('play', path, total, (t_work - t_lock) * 1000, c)
     except Exception:
         pass
 
@@ -862,6 +866,102 @@ def _bid_cache_put(key, value):
             oldest = min(_bid_cache.items(), key=lambda kv: kv[1][0])[0]
             _bid_cache.pop(oldest, None)
         _bid_cache[key] = (now, copy.deepcopy(value))
+
+# ---------------------------------------------------------------------------
+# ONE COMPUTATION PER QUESTION (2026-10-05)
+#
+# Aborting an HTTP request does not stop Flask computing, and model_lock_play is held
+# until the work finishes - so the site's retry used to queue BEHIND the request it had
+# just given up on. That is what a 19.5 s first card with attempts=2 was: roughly nine
+# seconds of real thinking, then the same nine again from the back of the queue.
+#
+# So an identical question no longer starts a second computation. It either JOINS the one
+# already running and takes its answer, or, if one finished in the last minute, takes that.
+# Identical means the same hand, seat, dealer, vulnerability, auction and cards played -
+# every request parameter the decision reads, so two keys that match cannot describe two
+# different bridge positions.
+#
+# This is not a decision change: a question gets the answer BEN computed for that exact
+# question. It does change one thing and it is the point of the exercise - a retry of the
+# same question now returns the SAME card, where before the sampling was redrawn and it
+# could return a different one.
+#
+# Deliberately not cached: /bid has its own cache above, and /explain and /claim are
+# cheap. Both maps are bounded and expire opportunistically, as the bid cache does; no
+# background worker.
+# ---------------------------------------------------------------------------
+CARD_CACHE_TTL = 60.0            # how long a finished answer stays usable
+CARD_CACHE_MAX = 200             # bounded, so a long session cannot grow it without end
+CARD_JOIN_TIMEOUT = 90.0         # a joiner gives up eventually rather than hanging for ever
+
+_card_running = {}               # key -> the computation in flight
+_card_finished = {}              # key -> (when, value)
+_card_lock = Lock()
+
+
+def _card_key(kind, **parts):
+    """Every parameter the decision reads, normalised, in a fixed order."""
+    return (kind,) + tuple(str(parts[k] or '').upper() for k in sorted(parts))
+
+
+def _card_decide(key, compute):
+    """
+    Returns (value, source) where source is 'fresh', 'joined' or 'cached'.
+
+    The leader runs `compute` - which is what takes model_lock_play - and every joiner
+    waits on an Event without touching that lock, so joiners cannot deepen the queue
+    they are trying to avoid.
+    """
+    now = time.time()
+    with _card_lock:
+        hit = _card_finished.get(key)
+        if hit is not None and now - hit[0] <= CARD_CACHE_TTL:
+            return copy.deepcopy(hit[1]), 'cached'
+        if hit is not None:
+            _card_finished.pop(key, None)
+
+        running = _card_running.get(key)
+        if running is None:
+            running = {'event': threading.Event(), 'value': None, 'error': None}
+            _card_running[key] = running
+            leader = True
+        else:
+            leader = False
+
+    if not leader:
+        running['event'].wait(CARD_JOIN_TIMEOUT)
+        if running['error'] is not None:
+            raise running['error']
+        if running['value'] is None:
+            raise RuntimeError('joined an identical request that did not finish in time')
+        return copy.deepcopy(running['value']), 'joined'
+
+    try:
+        value = compute()
+        # Joiners get the COPY, never the leader's own object: the route goes on to read
+        # and shape what it was handed, and two responses must not share one object.
+        stored = copy.deepcopy(value)
+        running['value'] = stored
+        with _card_lock:
+            expired = [k for k, (when, _) in _card_finished.items()
+                       if time.time() - when > CARD_CACHE_TTL]
+            for k in expired:
+                _card_finished.pop(k, None)
+            if len(_card_finished) >= CARD_CACHE_MAX:
+                oldest = min(_card_finished.items(), key=lambda kv: kv[1][0])[0]
+                _card_finished.pop(oldest, None)
+            _card_finished[key] = (time.time(), stored)
+        return value, 'fresh'
+    except BaseException as ex:
+        # Joiners are told, rather than left waiting out the full timeout for nothing.
+        running['error'] = ex
+        raise
+    finally:
+        running['event'].set()
+        with _card_lock:
+            if _card_running.get(key) is running:
+                _card_running.pop(key, None)
+
 
 def _shape_bid_response(full_result, details):
     result = copy.deepcopy(full_result)
@@ -1205,11 +1305,23 @@ def lead():
         _t_lock = time.time()
         PlayClock.start()
         _log('start', _ben_rid())
-        with model_lock_play:
-            _t_work = time.time()
-            card_resp = hint_bot.find_opening_lead(auction, aceking)
-            _t_done = time.time()
-        _ben_time_play('lead', _t_lock, _t_work, _t_done)
+
+        # One computation per question: an identical /lead already running is joined
+        # rather than queued behind. See _card_decide.
+        _started_at = []
+
+        def _compute_lead():
+            with model_lock_play:
+                _started_at.append(time.time())
+                return hint_bot.find_opening_lead(auction, aceking)
+
+        card_resp, _source = _card_decide(
+            _card_key('lead', hand=hand, seat=seat, dealer=dealer, vul=v, ctx=ctx),
+            _compute_lead)
+        _t_done = time.time()
+        # A joiner did no work of its own, so all of its time was waiting.
+        _t_work = _started_at[0] if _started_at else _t_done
+        _ben_time_play('lead', _t_lock, _t_work, _t_done, _source)
         user = request.args.get("user")
         #card_resp.who = user
         print("Leading:", card_resp.card.symbol())
@@ -1364,11 +1476,26 @@ def play():
         _t_lock = time.time()
         PlayClock.start()
         _log('start', _ben_rid())
-        with model_lock_play:
-            _t_work = time.time()
-            card_resp, player_i, msg =  play_api(dealer_i, vuln[0], vuln[1], hands, models, sampler, contract, strain_i, decl_i, auction, cards, cardplayer, False, features, effective_verbose)
-            _t_done = time.time()
-        _ben_time_play(msg, _t_lock, _t_work, _t_done)
+
+        # One computation per question, as on the lead. `played` is in the key, so the
+        # next card of the same trick is a different question and is never confused
+        # with this one.
+        _started_at = []
+
+        def _compute_play():
+            with model_lock_play:
+                _started_at.append(time.time())
+                return play_api(dealer_i, vuln[0], vuln[1], hands, models, sampler, contract,
+                                strain_i, decl_i, auction, cards, cardplayer, False, features,
+                                effective_verbose)
+
+        (card_resp, player_i, msg), _source = _card_decide(
+            _card_key('play', hand=hand_str, dummy=dummy_str, seat=seat, dealer=dealer,
+                      vul=v, ctx=ctx, played=played, cardplayer=cardplayer),
+            _compute_play)
+        _t_done = time.time()
+        _t_work = _started_at[0] if _started_at else _t_done
+        _ben_time_play(msg, _t_lock, _t_work, _t_done, _source)
         # PIMC counts its own playouts into the stage clock; the why line reports the
         # same number rather than counting it a second time.
         _log('note', playouts=PlayClock.get()['playouts'])
