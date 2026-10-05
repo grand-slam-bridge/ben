@@ -66,8 +66,8 @@ for label in "${LABELS[@]}"; do
     sleep 2
   fi
   if lsof -ti:8085 >/dev/null 2>&1; then
-    echo "!! port 8085 is still held by $(lsof -ti:8085 | tr '\n' ' ') - refusing to run $label" >&2
-    exit 1
+    echo "!! port 8085 is still held by $(lsof -ti:8085 | tr '\n' ' ') - skipping $label" >&2
+    continue
   fi
   # A WRAPPER, NOT A SUBSHELL. macOS strips DYLD_* when a process is spawned, so exporting
   # it in a subshell does not reach the service: PIMC then cannot load its own DDS and the
@@ -98,8 +98,8 @@ WRAP
     sleep 1
   done
   if ! grep -q "$(basename "$conf")" "$WORK/out/api-$label.log" 2>/dev/null; then
-    echo "!! $label: the answering service did not load $conf - refusing to score it" >&2
-    exit 1
+    echo "!! $label: the answering service did not load $conf - skipping it" >&2
+    continue
   fi
   if [ "$ready" != "1" ]; then
     echo "  !! $label: service never answered a lead - see $WORK/out/api-$label.log" >&2
@@ -109,6 +109,24 @@ WRAP
   PYTHONPATH="$DDS3" "$PY" "$R/scripts/bench_card_play.py" \
      --deals "$DEALS" --label "$label" --out "$WORK/out/results-$label.json" \
      2>&1 | tail -3
+
+  # ONE RETRY IF THE SETTING PRODUCED NOTHING. BGADLL.dylib - PIMC's native library -
+  # aborts the whole process occasionally and unpredictably: three SIGABRTs inside it on
+  # 2026-10-05, then 1145 cards across two runs without one. When it does go, every
+  # remaining board of that setting fails with "Connection refused" and the setting is
+  # lost. A restart and one more attempt costs a few minutes and saves the run.
+  if ! grep -q '"boards": \[{' "$WORK/out/results-$label.json" 2>/dev/null; then
+    echo "  !! $label produced no boards - restarting the service and retrying once" >&2
+    lsof -ti:8085 | xargs kill -9 2>/dev/null; sleep 5
+    nohup "$WORK/run-$label.sh" > "$WORK/out/api-$label-retry.log" 2>&1 &
+    for i in $(seq 1 180); do
+      curl -sS --max-time 5 "http://127.0.0.1:8085/lead?hand=K93.AKT3.643.KJ5&seat=E&dealer=N&vul=&ctx=1D-P-2D-P-P-P&details=false" 2>/dev/null | grep -q '"card"' && break
+      sleep 1
+    done
+    PYTHONPATH="$DDS3" "$PY" "$R/scripts/bench_card_play.py" \
+       --deals "$DEALS" --label "$label" --out "$WORK/out/results-$label.json" \
+       2>&1 | tail -3
+  fi
 done
 pkill -f "gameapi.py" 2>/dev/null
 echo "ALL DONE: $WORK/out"
