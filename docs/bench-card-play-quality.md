@@ -198,3 +198,52 @@ benchmark cannot be completed on this machine until the crash is pinned down.
 
 No results are reported. Two boards from one setting is not a sample, and the settings
 cannot be compared on it.
+
+---
+
+# Update, 2026-10-05 (second session) — the runs, and three infrastructure faults
+
+## Item 1 — the previous run did not finish
+
+`out/` from the previous session held only `api-deployed.log`. **No results JSON at all**:
+the run was killed when that session ended, before a single setting completed. Nothing from it
+could be reported, so it was rerun.
+
+## Three faults in getting a run started, all of them mine, all now fixed
+
+1. **`pkill -f "gameapi.py"` killed my own shell.** The pattern matches any process whose command
+   line *contains* that string — including the shell that was about to launch the run, because the
+   launch command mentioned it. Exit 144 (SIGTERM), and `/tmp/bench10` was never created. Stale
+   processes must be killed **by PID**, found with `ps | grep '[g]ameapi'`.
+2. **Two services from the previous session were still holding port 8085**, so the first relaunch
+   talked to a service running the *old* configuration. This is the same contamination the previous
+   session hit, surviving across sessions.
+3. **The service dies silently under `bench_run_all.sh`'s launch but not under a plain one.**
+   With `--config <copy>.conf` it served 15 cards and vanished — no traceback, no `Fatal Python
+   error`, just gone, which reaches the harness as `RemoteDisconnected` and then
+   `Connection refused`. Started the same way but *without* `--config`, the identical deals play
+   fine. **This is unexplained and is the thing to fix before the full run can be trusted**: either
+   the config copy differs in some way that matters, or passing `--config` takes a path that
+   crashes natively.
+
+## What the deployed setting looks like so far
+
+Two boards, which is not a result:
+
+```text
+deal 1/10  5NN  declarer gave away 1.0, defence 1.0   (85 s)
+deal 2/10  5CE  declarer gave away 0.0, defence 0.0   (39 s)
+```
+
+Timing, from the service's own `[ben-time]` lines: trick-one cards cost 5–8 s and later cards
+0.6 s. The early cost is real and is what the warm-up and the first-card work were about. Note
+`playouts=10` on some early cards against a configured 100 — PIMC is being starved of its one
+second while the harness's own DDS competes for the same two cores, so **quality measured this way
+is not quality on an idle box**. The harness should record cards as played and score them in a
+second pass; that change is not made yet.
+
+## Not reported
+
+Items 2–5 of this brief: there is no six-setting comparison, and two boards of one setting cannot
+support one. **No numbers are given for tricks lost per setting, PIMC rejection rates, lead
+quality or worst cards**, because they were not measured.
