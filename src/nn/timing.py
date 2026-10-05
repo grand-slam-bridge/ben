@@ -14,6 +14,7 @@ Usage:
     ModelTimer.reset()
 """
 
+import functools
 import time
 from collections import defaultdict
 from threading import Lock
@@ -156,5 +157,86 @@ def timed_inference(model_name: str):
         def wrapper(*args, **kwargs):
             with ModelTimer.time_call(model_name):
                 return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# [ben-time] PER-DECISION STOPWATCH
+#
+# ModelTimer above accumulates across a whole run, which answers "where does a
+# session spend its time". PlayClock answers the other question - "where did
+# THIS card go" - because that is the one a slow table needs: a card that took
+# four seconds has spent them in sampling, in double dummy or in PIMC, and the
+# three are tuned by different settings.
+#
+# It is thread-local, so two decisions in flight cannot add to each other's
+# total, and it is unconditional: a few float additions and one dict per card,
+# against a decision that costs hundreds of milliseconds. Nothing is kept
+# between cards - start() throws the previous one away.
+# ---------------------------------------------------------------------------
+
+import threading
+
+
+class PlayClock:
+    """Milliseconds spent in each stage of ONE card decision."""
+
+    _local = threading.local()
+
+    @classmethod
+    def start(cls):
+        cls._local.d = {'sampling': 0.0, 'dd': 0.0, 'pimc': 0.0, 'playouts': 0}
+
+    @classmethod
+    def add(cls, stage, seconds):
+        d = getattr(cls._local, 'd', None)
+        if d is not None:
+            d[stage] = d.get(stage, 0.0) + seconds * 1000.0
+
+    @classmethod
+    def add_playouts(cls, n):
+        # PIMC retries itself without constraints when it finds nothing, so this
+        # accumulates rather than overwrites: the number reported is the playouts
+        # the decision as a whole completed.
+        d = getattr(cls._local, 'd', None)
+        if d is not None and n is not None:
+            try:
+                d['playouts'] = d.get('playouts', 0) + int(n)
+            except Exception:
+                pass
+
+    @classmethod
+    def get(cls):
+        return getattr(cls._local, 'd', None) or {'sampling': 0.0, 'dd': 0.0, 'pimc': 0.0, 'playouts': 0}
+
+    @classmethod
+    def stage(cls, name):
+        return _PlayStage(name)
+
+
+class _PlayStage:
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        self.t = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        PlayClock.add(self.name, time.perf_counter() - self.t)
+        return False
+
+
+def timed_stage(name):
+    """Decorator form of PlayClock.stage, for a method with several returns."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            t = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                PlayClock.add(name, time.perf_counter() - t)
         return wrapper
     return decorator

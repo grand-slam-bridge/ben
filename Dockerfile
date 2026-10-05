@@ -22,6 +22,12 @@ RUN pip install --break-system-packages -r requirements.txt
 # Suppress TensorFlow/CUDA warnings (no GPU in container)
 ENV TF_CPP_MIN_LOG_LEVEL=2
 ENV CUDA_VISIBLE_DEVICES=""
+# TensorFlow sizes its thread pools from the cores it can SEE, which inside a container
+# is the host's count and not the 2 CPU quota this service runs on. Left alone it opens
+# a pool many times the size of the box, and three Python processes each do it.
+ENV TF_NUM_INTRAOP_THREADS=2
+ENV TF_NUM_INTEROP_THREADS=1
+ENV OMP_NUM_THREADS=2
 
 COPY src/frontend /app/frontend/
 COPY src/*.py /app/

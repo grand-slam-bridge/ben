@@ -13,6 +13,7 @@ from bidding import bidding
 
 import carding
 from util import hand_to_str, expected_tricks_sd, p_defeat_contract, follow_suit, calculate_seed
+from nn.timing import PlayClock
 from colorama import Fore, init
 
 init()
@@ -390,7 +391,8 @@ class BotLead:
         # Reset randomizer
         self.rng = self.get_random_generator()
 
-        accepted_samples, sorted_scores, p_hcp, p_shp, quality, samplings = self.sampler.generate_samples_iterative(auction, lead_index, self.sampler.sample_boards_for_auction_opening_lead, self.sampler.sample_hands_opening_lead, self.rng, self.hand_str, self.vuln, self.models, [], aceking)
+        with PlayClock.stage('sampling'):
+            accepted_samples, sorted_scores, p_hcp, p_shp, quality, samplings = self.sampler.generate_samples_iterative(auction, lead_index, self.sampler.sample_boards_for_auction_opening_lead, self.sampler.sample_hands_opening_lead, self.rng, self.hand_str, self.vuln, self.models, [], aceking)
 
         if self.verbose:
             print(f"Generated samples: {accepted_samples.shape[0]} in {samplings} samples. Quality {quality:.2f}")
@@ -420,9 +422,11 @@ class BotLead:
         if n_accepted == 0:
             tricks = np.zeros((0, len(lead_card_indexes), 2))
         elif self.models.double_dummy:
-            tricks = self.double_dummy_estimates(lead_card_indexes, contract, accepted_samples)
+            with PlayClock.stage('dd'):
+                tricks = self.double_dummy_estimates(lead_card_indexes, contract, accepted_samples)
         else:
-            tricks = self.single_dummy_estimates(lead_card_indexes, contract, accepted_samples)
+            with PlayClock.stage('dd'):
+                tricks = self.single_dummy_estimates(lead_card_indexes, contract, accepted_samples)
         
         if self.verbose:
             print(f'simulate_outcomes_opening_lead took {(time.time() - t_start):0.4f}')

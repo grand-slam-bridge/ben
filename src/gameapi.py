@@ -80,7 +80,7 @@ import copy
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from threading import Lock
-from nn.timing import ModelTimer
+from nn.timing import ModelTimer, PlayClock
 
 # Intil fixed in Keras, this is needed to remove a wrong warning
 import warnings
@@ -309,7 +309,8 @@ def play_api(dealer_i, vuln_ns, vuln_ew, hands, models, sampler, contract, strai
                         return card_resp, player_i, play_status
                 played_cards = [card for row in player_cards_played52 for card in row] + current_trick52
                 # No obvious play, so we roll out
-                rollout_states, bidding_scores, c_hcp, c_shp, quality, probability_of_occurence, lead_scores, play_scores, logical_play_scores, discard_scores, worlds = sampler.init_rollout_states(trick_i, player_i, card_players, played_cards, player_cards_played, shown_out_suits, discards, features["aceking"], current_trick, opening_lead52, auction, card_players[player_i].hand_str, card_players[player_i].public_hand_str, [vuln_ns, vuln_ew], models, card_players[player_i].get_random_generator())
+                with PlayClock.stage('sampling'):
+                    rollout_states, bidding_scores, c_hcp, c_shp, quality, probability_of_occurence, lead_scores, play_scores, logical_play_scores, discard_scores, worlds = sampler.init_rollout_states(trick_i, player_i, card_players, played_cards, player_cards_played, shown_out_suits, discards, features["aceking"], current_trick, opening_lead52, auction, card_players[player_i].hand_str, card_players[player_i].public_hand_str, [vuln_ns, vuln_ew], models, card_players[player_i].get_random_generator())
                 assert rollout_states[0].shape[0] > 0, "No samples for DDSolver"
                 
                 card_players[player_i].check_pimc_constraints(trick_i, rollout_states, quality)
@@ -733,6 +734,25 @@ limiter = Limiter(
 model_lock_bid = Lock()
 model_lock_play = Lock()
 
+
+def _ben_time_play(path, t_lock, t_work, t_done):
+    """
+    [ben-time] ONE LINE PER CARD. total_ms is the whole decision, wait_ms the part of it
+    spent queueing behind another card, and sampling/dd/pimc the three stages the rest went
+    into. They are not meant to add up to total minus wait - the neural network softmax, the
+    merge and the card choice sit outside all three - and that gap IS a reading: it is what
+    the decision spends on something other than the three big stages.
+    Wrapped so a logging fault can never cost a card.
+    """
+    try:
+        c = PlayClock.get()
+        print('[ben-time] play path=%s total_ms=%d wait_ms=%d sampling_ms=%d dd_ms=%d pimc_ms=%d playouts=%d' % (
+            path, (t_done - t_lock) * 1000, (t_work - t_lock) * 1000,
+            c['sampling'], c['dd'], c['pimc'], c['playouts']), flush=True)
+    except Exception:
+        pass
+
+
 # Cache the full result of recent /bid calculations.  Grand Slam Bridge first
 # requests the bid and then requests details for the same position; without this
 # cache BEN calculated the exact position twice.
@@ -989,10 +1009,26 @@ def bid():
             )
             explanations, bba_controlled, preempted = hint_bot.explain_auction(auction)
             hint_bot.bba_is_controlling = bba_controlled
+        # [ben-time] one line per bid. The lock is the only place a request waits for
+        # another, so the gap either side of it IS the queueing time.
+        _t_lock = time.time()
         with model_lock_bid:
+            _t_work = time.time()
             bid = hint_bot.bid(auction)
+            _t_done = time.time()
 
         full_result = bid.to_dict()
+        try:
+            _cands = full_result.get('candidates') or []
+            _top = _cands[0].get('insta_score') if _cands else None
+            # samples are only produced when the rollout ran, so they mark the path
+            _sampled = bool(full_result.get('samples'))
+            print('[ben-time] bid path=%s top=%s total_ms=%d wait_ms=%d' % (
+                'sampled' if _sampled else 'no-search',
+                ('%.3f' % _top) if _top is not None else 'na',
+                (_t_done - _t_lock) * 1000, (_t_work - _t_lock) * 1000), flush=True)
+        except Exception:
+            pass
         full_result["explanations"] = explanations
 
         # Add explanation for the recommended bid
@@ -1082,8 +1118,15 @@ def lead():
                 bba_bot.get_sample(auction)
 
         hint_bot = BotLead(vuln, hand, models, sampler, position, dealer_i, dds, effective_verbose)
+        # [ben-time] one line per opening lead. The lock is the only place a request waits
+        # for another, so the gap either side of it IS the queueing time.
+        _t_lock = time.time()
+        PlayClock.start()
         with model_lock_play:
+            _t_work = time.time()
             card_resp = hint_bot.find_opening_lead(auction, aceking)
+            _t_done = time.time()
+        _ben_time_play('lead', _t_lock, _t_work, _t_done)
         user = request.args.get("user")
         #card_resp.who = user
         print("Leading:", card_resp.card.symbol())
@@ -1229,8 +1272,15 @@ def play():
             features["aceking"] = aceking
 
         # Play
+        # [ben-time] one line per card. msg is play_api's own verdict on the path taken -
+        # Forced and Follow are shortcuts that never reach sampling, DD or PIMC at all.
+        _t_lock = time.time()
+        PlayClock.start()
         with model_lock_play:
+            _t_work = time.time()
             card_resp, player_i, msg =  play_api(dealer_i, vuln[0], vuln[1], hands, models, sampler, contract, strain_i, decl_i, auction, cards, cardplayer, False, features, effective_verbose)
+            _t_done = time.time()
+        _ben_time_play(msg, _t_lock, _t_work, _t_done)
         print("Playing:", card_resp.card.symbol(), msg)
         result = card_resp.to_dict()
         if not details:
