@@ -54,18 +54,58 @@ conf_for() {
 for label in "${LABELS[@]}"; do
   conf="$(conf_for "$label")"
   echo "=== $label  ($conf) ==="
-  pkill -f "gameapi.py" 2>/dev/null; sleep 2
-  (
-    cd "$R/src"
-    export BEN_HOME="$R" TF_CPP_MIN_LOG_LEVEL=3 PYTHONPATH="$DDS3"
-    export DYLD_LIBRARY_PATH="$R/bin/BGA/macos/arm64"
-    nohup "$PY" gameapi.py --host 127.0.0.1 --config "$conf" > "$WORK/out/api-$label.log" 2>&1 &
-  )
+  # EVERY OLD SERVICE MUST BE GONE FIRST. A stale one still holding 8085 makes the new
+  # one die with "Address already in use" while the benchmark cheerfully talks to the
+  # OLD process - so boards get played against the previous settings and the numbers are
+  # quietly wrong. Two runs were thrown away to this. Fail loudly instead.
+  pkill -f "gameapi.py" 2>/dev/null
+  pkill -f "run-.*\.sh" 2>/dev/null
+  sleep 3
+  if lsof -ti:8085 >/dev/null 2>&1; then
+    lsof -ti:8085 | xargs kill -9 2>/dev/null
+    sleep 2
+  fi
+  if lsof -ti:8085 >/dev/null 2>&1; then
+    echo "!! port 8085 is still held by $(lsof -ti:8085 | tr '\n' ' ') - refusing to run $label" >&2
+    exit 1
+  fi
+  # A WRAPPER, NOT A SUBSHELL. macOS strips DYLD_* when a process is spawned, so exporting
+  # it in a subshell does not reach the service: PIMC then cannot load its own DDS and the
+  # FIRST card request kills the process outright -
+  #   System.DllNotFoundException: Unable to load shared library 'dds'
+  #   Fatal Python error: Aborted
+  # which reads from the client side as "Remote end closed connection without response"
+  # on every board. Writing a script and exec-ing it carries the variable through.
+  cat > "$WORK/run-$label.sh" <<WRAP
+#!/bin/bash
+cd "$R/src"
+export BEN_HOME="$R"
+export TF_CPP_MIN_LOG_LEVEL=3
+export PYTHONPATH="$DDS3"
+export DYLD_LIBRARY_PATH="$R/bin/BGA/macos/arm64"
+exec "$PY" gameapi.py --host 127.0.0.1 --config "$conf"
+WRAP
+  chmod +x "$WORK/run-$label.sh"
+  nohup "$WORK/run-$label.sh" > "$WORK/out/api-$label.log" 2>&1 &
   # wait for the port, up to 90 s
-  for i in $(seq 1 90); do
-    curl -sS -o /dev/null --max-time 2 "http://127.0.0.1:8085/" 2>/dev/null && break
+  # Wait for a real DECISION, not just an open port: the service answers / long before
+  # the models are loaded, and PIMC's failure only shows when a card is asked for.
+  ready=0
+  for i in $(seq 1 180); do
+    if curl -sS --max-time 5 "http://127.0.0.1:8085/lead?hand=K93.AKT3.643.KJ5&seat=E&dealer=N&vul=&ctx=1D-P-2D-P-P-P&details=false" 2>/dev/null | grep -q '"card"'; then
+      ready=1; break
+    fi
     sleep 1
   done
+  if ! grep -q "$(basename "$conf")" "$WORK/out/api-$label.log" 2>/dev/null; then
+    echo "!! $label: the answering service did not load $conf - refusing to score it" >&2
+    exit 1
+  fi
+  if [ "$ready" != "1" ]; then
+    echo "  !! $label: service never answered a lead - see $WORK/out/api-$label.log" >&2
+    grep -m1 -E "Unable to load shared library|Fatal Python error" "$WORK/out/api-$label.log" >&2
+    continue
+  fi
   PYTHONPATH="$DDS3" "$PY" "$R/scripts/bench_card_play.py" \
      --deals "$DEALS" --label "$label" --out "$WORK/out/results-$label.json" \
      2>&1 | tail -3
