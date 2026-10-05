@@ -25,6 +25,7 @@ start it. See scripts/bench_run_all.sh, which starts one per setting.
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -204,7 +205,20 @@ def ctx_for(contract, declarer_i, dealer_i):
 
 def play_board(ben, dd, hands, contract, declarer_i, dealer_i, trace=None):
     """
-    Play one board out, scoring every card. Returns a dict of results, or an error.
+    Play one board out, then score it.
+
+    TWO PASSES, AND THE ORDER MATTERS (2026-10-05). The first version solved a DDS
+    position for every card AS IT WAS PLAYED, which put the scorer on the same two cores
+    as the service - and the service is itself configured for two DDS threads and two
+    PIMC threads. PIMC is given one second of wall clock (pimc_wait) and simply completes
+    fewer playouts when it is starved, so the first run measured a BEN that had been
+    given 10 playouts where the config asks for 100. That is not the robot anybody
+    deploys, and no comparison between settings could survive it.
+
+    So nothing is solved while BEN is thinking. The board is played first, recording the
+    position before every card, and the solver runs afterwards over that record. The
+    numbers are identical - double dummy does not care when it is asked - and BEN gets
+    the machine to itself.
     """
     strain = contract[1]
     trump = {"S": 0, "H": 1, "D": 2, "C": 3, "N": 4}[strain]
@@ -221,14 +235,17 @@ def play_board(ben, dd, hands, contract, declarer_i, dealer_i, trace=None):
     worst = []                 # (lost, detail)
     zero_playouts = 0
     pimc_rejected = 0
+    playouts_seen = []
+    record = []                # every card, with the position before it, to score later
 
     for trick in range(13):
         current = []
         trick_leader = leader
         for step in range(4):
             to_play = (trick_leader + step) % 4
-            values = dd.card_values([sorted(r) for r in remaining], trump, trick_leader, current)
-            best = max(values.values()) if values else 0
+            # The position is REMEMBERED here and solved after the board, so the solver
+            # never competes with BEN for a core.
+            snapshot = ([sorted(r) for r in remaining], trick_leader, list(current))
 
             if trick == 0 and step == 0:
                 params = dict(hand=hand_pbn(remaining[to_play]), seat=SEATS[to_play],
@@ -252,34 +269,29 @@ def play_board(ben, dd, hands, contract, declarer_i, dealer_i, trace=None):
             if code not in remaining[to_play]:
                 return {"error": "card %s not in %s's hand" % (raw, SEATS[to_play]), "trick": trick}
 
-            got = values.get(code, best)
-            delta = best - got
-            if delta > 0:
-                differs += 1
-                side = "declarer" if to_play in (declarer_i, dummy_i) else "defence"
-                lost[side] += delta
-                bestcards = [card_str(c) for c, v in values.items() if v == best]
-                worst.append((delta, {
-                    "trick": trick + 1, "seat": SEATS[to_play], "played": raw,
-                    "better": bestcards[:4], "lost": delta,
-                    "hand": hand_pbn(remaining[to_play]),
-                    "who": resp.get("who"),
-                    "candidates": (resp.get("candidates") or [])[:4],
-                }))
+            record.append({
+                "snapshot": snapshot, "code": code, "raw": raw,
+                "trick": trick, "seat": to_play, "lead": (trick == 0 and step == 0),
+                "hand": hand_pbn(remaining[to_play]),
+                "who": resp.get("who"),
+                "candidates": (resp.get("candidates") or [])[:5],
+                "seconds": dt,
+            })
 
             msg = json.dumps(resp)
-            if '"Playouts": 0' in msg or "playouts=0" in msg:
-                zero_playouts += 1
             if "SET REJECTED" in msg:
                 pimc_rejected += 1
-
-            if trick == 0 and step == 0:
-                lead_info = {"card": raw, "lost": delta, "who": resp.get("who"),
-                             "hand": hand_pbn(remaining[to_play]),
-                             "candidates": (resp.get("candidates") or [])[:5],
-                             "best": [card_str(c) for c, v in values.items() if v == best][:4],
-                             "contract": contract, "trump": strain,
-                             "seconds": dt}
+            # PIMC writes "<combinations> - <examined> - <playouts>" into each candidate's
+            # msg. Reading the playouts back is the only way to see whether PIMC got the
+            # time the config gives it, or was starved by something else on the cores.
+            for c in (resp.get("candidates") or []):
+                m = re.search(r"(\d+)\s*-\s*(\d+)\s*-\s*(\d+)", str(c.get("msg") or ""))
+                if m:
+                    n = int(m.group(3))
+                    playouts_seen.append(n)
+                    if n == 0:
+                        zero_playouts += 1
+                    break
 
             cards_timed.append((trick, dt))
             remaining[to_play].discard(code)
@@ -301,10 +313,35 @@ def play_board(ben, dd, hands, contract, declarer_i, dealer_i, trace=None):
                 bestrank, bestpos = rr, i
         leader = (trick_leader + bestpos) % 4
 
+    # ---- SECOND PASS: now that BEN is idle, score what was played ----
+    lead_info = None
+    for r in record:
+        hands_now, trick_leader, current = r["snapshot"]
+        values = dd.card_values(hands_now, trump, trick_leader, current)
+        best = max(values.values()) if values else 0
+        got = values.get(r["code"], best)
+        delta = best - got
+        bestcards = [card_str(c) for c, v in values.items() if v == best]
+        if delta > 0:
+            differs += 1
+            side = "declarer" if r["seat"] in (declarer_i, dummy_i) else "defence"
+            lost[side] += delta
+            worst.append((delta, {
+                "trick": r["trick"] + 1, "seat": SEATS[r["seat"]], "played": r["raw"],
+                "better": bestcards[:4], "lost": delta, "hand": r["hand"],
+                "who": r["who"], "candidates": r["candidates"][:4],
+            }))
+        if r["lead"]:
+            lead_info = {"card": r["raw"], "lost": delta, "who": r["who"],
+                         "hand": r["hand"], "candidates": r["candidates"],
+                         "best": bestcards[:4], "contract": contract,
+                         "trump": strain, "seconds": r["seconds"]}
+
     worst.sort(key=lambda x: -x[0])
     return {"lost": lost, "differs": differs, "cards": cards_timed, "lead": lead_info,
             "worst": [w[1] for w in worst[:6]],
-            "zero_playouts": zero_playouts, "pimc_rejected": pimc_rejected}
+            "zero_playouts": zero_playouts, "pimc_rejected": pimc_rejected,
+            "playouts": playouts_seen}
 
 
 # ---------------------------------------------------------------- scoring self-test
