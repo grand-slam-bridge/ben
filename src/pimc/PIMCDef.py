@@ -49,6 +49,8 @@ from pimc.BGADLL_Native import is_available as _native_available, \
     NativePIMCDef, NativeHand, NativePlay, NativeConstraints, NativeExtensions, NativeMacros, NativeCard
 USE_NATIVE_BGA = _native_available()
 
+from nn.timing import PlayClock
+
 class BGADefDLL:
 
     _dll_loaded = None  # Class-level attribute to store the DLL singleton
@@ -549,6 +551,7 @@ class BGADefDLL:
             sys.exit(1)
         # Allow running threads to finalize
         time.sleep(0.05)
+        PlayClock.add_playouts(getattr(self.pimc, 'Playouts', None))
         if self.verbose:    
             print("max_playout",self.max_playout)
             print(f"Playouts: {self.pimc.Playouts}")

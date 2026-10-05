@@ -18,7 +18,7 @@ import carding
 from alphamju.alphamju import alphamju
 from util import hand_to_str, follow_suit, calculate_seed, symbols
 from colorama import Fore, init
-from nn.timing import ModelTimer
+from nn.timing import ModelTimer, PlayClock, timed_stage
 init()
 class CardPlayer:
 
@@ -475,7 +475,7 @@ class CardPlayer:
         else:                    
             if self.pimc_declaring and (self.player_i == 1 or self.player_i == 3):
                 timer_label = 'ace_declaring' if self.pimc.__class__.__name__ == 'ACEDLL' else 'pimc_declaring'
-                with ModelTimer.time_call(timer_label):
+                with ModelTimer.time_call(timer_label), PlayClock.stage('pimc'):
                     pimc_resp_cards = self.pimc.nextplay(self.player_i, shown_out_suits, self.missing_cards)
                 if self.verbose:
                     print("PIMC result:")
@@ -495,7 +495,7 @@ class CardPlayer:
             else:
                 if self.pimc_defending and (self.player_i == 0 or self.player_i == 2):
                     timer_label = 'ace_defending' if self.pimc.__class__.__name__ == 'ACEDefDLL' else 'pimc_defending'
-                    with ModelTimer.time_call(timer_label):
+                    with ModelTimer.time_call(timer_label), PlayClock.stage('pimc'):
                         pimc_resp_cards = self.pimc.nextplay(self.player_i, shown_out_suits, self.missing_cards)
                     if self.verbose:
                         print("PIMCDef result:")
@@ -532,6 +532,7 @@ class CardPlayer:
                 updated_msg = values[-1] + f"|𝛼𝞵 {percent}%"
                 merged_card_resp[card52] = (*values[:-1], updated_msg)
 
+    @timed_stage('dd')
     def get_cards_dd_evaluation(self, trick_i, leader_i, tricks52, current_trick52, players_states, probabilities_list, bidding_quality):
         
         n_samples = players_states[0].shape[0]
