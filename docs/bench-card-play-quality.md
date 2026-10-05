@@ -247,3 +247,67 @@ second pass; that change is not made yet.
 Items 2–5 of this brief: there is no six-setting comparison, and two boards of one setting cannot
 support one. **No numbers are given for tricks lost per setting, PIMC rejection rates, lead
 quality or worst cards**, because they were not measured.
+
+---
+
+# The deployed setting, 10 deals — first real result (2026-10-05)
+
+`deployed: 10 boards, 0 errors, 676 s, 520 BEN calls`. Contracts fixed in advance from the
+double-dummy table; robots in all four seats; every card scored against DDS.
+
+## Tricks given away
+
+| | per board | boards affected |
+|---|---|---|
+| as declarer | **1.20** | 7 of 10 |
+| in defence | **0.70** | 6 of 10 |
+
+Only **15 of 520 cards** were not a double-dummy best card — 2.9%. The damage is concentrated:
+one board (deal 5, 6NT) accounts for 5 of the 12 declarer tricks on its own.
+
+| deal | contract | decl | def | bad cards | lead | lead rule |
+|---|---|---|---|---|---|---|
+| 0 | 5NN | 1 | 1 | 2 | CQ | NN - bad quality samples |
+| 1 | 5CE | 0 | 0 | 0 | SA | Simulation (IMP) |
+| 2 | 5HN | 1 | 1 | 2 | D9 | NN - bad quality samples |
+| 3 | 4SE | 0 | 1 | 1 | CA | Simulation (IMP) |
+| 4 | 2HN | 1 | 2 | 3 | SK | Simulation (IMP) |
+| 5 | 6NN | **5** | 0 | 2 | CQ | NN - bad quality samples |
+| 6 | 6HE | 1 | 0 | 1 | DK | Simulation (IMP) |
+| 7 | 3NW | 1 | 1 | 2 | C9 | Simulation (IMP) |
+| 8 | 5NN | 2 | 1 | 2 | S9 | NN - bad quality samples |
+| 9 | 4CE | 0 | 0 | 0 | DK | Simulation (IMP) |
+
+## Opening leads
+
+**Every one of the ten leads was a double-dummy best card — 0.00 tricks lost.** No trump honours
+were led. Two were unsupported honours (CQ without the jack, twice — both on boards where the
+lead rule was `NN - bad quality samples`), and two were cards the lead net itself scored below
+`lead_threshold` (0.20). Neither cost anything here.
+
+Worth noting for the bigger run: **4 of 10 leads were chosen by `NN - bad quality samples`**, the
+path that abandons the simulation because the sampler could not find layouts consistent with the
+auction. That is the benchmark's own doing — the auction is fabricated (`5N-P-P-P`), so it carries
+no information and the sampler has little to work from. On real auctions that path should be rarer.
+
+## PIMC was starved, and by how much
+
+Measured from the service's own `[ben-time]` lines across all 416 calculated cards:
+
+```text
+playouts: min 0   median 100   mean 69   max 100   (configured 100)
+   reached 100:  266 of 416  (64%)
+   reached  50:  282 of 416  (68%)
+   zero playouts: 30 of 416  (7%)
+```
+
+So **PIMC completed its full 100 playouts on only 64% of cards**, and on 30 cards it completed
+none at all — which is exactly the 30 the harness counted as PIMC-set-rejected, since a decision
+with no playouts has no usable PIMC values. Mean 69 of 100 is a 31% shortfall.
+
+The cause was the harness solving a DDS position for every card **while BEN was thinking**, on the
+same two cores the service is configured to use. Fixed: the board is now played first and scored
+afterwards (see the commit "Score the cards after the board, not while BEN is thinking").
+
+Time per calculated card: median 0.5 s, **max 73.7 s**. The maximum is worth remembering when
+setting the site's 20 s first-attempt budget.
