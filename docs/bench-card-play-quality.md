@@ -340,3 +340,26 @@ So there is nothing to "fix" in the launch; the earlier conclusion was a coincid
 cause. What a long run needs instead is **tolerance**: `bench_run_all.sh` should notice a dead
 service, restart it, and retry or skip the board, rather than turning one abort into ten failed
 boards. That change is not made yet.
+
+## Correction: the two-pass harness did NOT change PIMC's playouts
+
+I reported that moving the scoring out of the play loop took PIMC from 64% of cards reaching its
+configured 100 playouts to 97%. **That was the wrong comparison** — 64% was `deployed` and 97% was
+`stop8`, two different settings. Measured properly, the same setting under both harnesses:
+
+```text
+deployed, old one-pass harness:  n=416  mean 69  reached 100 on 64%
+deployed, new two-pass harness:  n=416  mean 69  reached 100 on 64%
+```
+
+Identical. The harness was never starving PIMC.
+
+What the low figure actually is: `deployed` runs PIMC to trick 13, and at tricks 9–13 there are
+only a handful of unknown cards left, so there are not 100 distinct playouts to be made. PIMC
+reports what it could do and the merge then rejects those decisions as unusable — which is why
+`pimcRej` is 30 for `deployed` and 0 for `stop8`. `stop8` scores 97% because it never makes those
+calls at all, not because it makes them better.
+
+The two-pass change is kept: it removes a genuine source of contention between the scorer and the
+service and costs nothing. But it is not what those numbers showed, and the earlier commit message
+claiming otherwise is wrong.
