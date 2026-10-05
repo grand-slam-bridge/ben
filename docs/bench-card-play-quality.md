@@ -149,3 +149,52 @@ building the solver.
 What now exists that did not before: **a working solver on this machine**, a reproducible script
 to rebuild it, and a verified local setup that reproduces a live decision card-for-card. The
 benchmark is now a matter of running it rather than of whether it can run at all.
+
+---
+
+# Update 2 — the harness runs; the service dies after two or three boards
+
+Branch `bench/card-play-harness`.
+
+## What now works
+
+- `/play` returns a card over HTTP with the built solver and the deployed settings,
+  `who=PIMC-BEN-IMP`, so PIMC is genuinely in the decision.
+- The harness plays a full board — 52 cards, every one scored against double dummy — in
+  about 78 seconds, and its scorer is validated by re-solving every card (78 cards, exact).
+- The six settings are generated as copies of `default_api.conf`; the repository's own
+  config is never touched.
+
+## The blocker
+
+**The service dies silently after two or three boards.** Both settings that got as far as
+playing ended identically: the log stops in the middle of a `/play` request with **no
+traceback, no `Fatal Python error`, nothing**. The benchmark then gets
+`Connection refused` for every remaining board — 2 boards scored, 8 errors.
+
+A silent death with no Python-level message is a **native crash**: something in
+`BGADLL.dylib` (PIMC) or the solver aborts the process without Python seeing it. The
+evidence that it is PIMC rather than the harness:
+
+- a single board played by hand earlier completed all 52 cards, so it is not the first
+  card or the setup that is wrong;
+- the last request before each death is an ordinary `/play` mid-trick;
+- `[ben-slow]` shows one card at 11.5 s with `worst=pimc` shortly before the deployed
+  service stopped.
+
+**This is a macOS-only finding until shown otherwise.** The deployed service runs Linux
+with a different BGADLL build, and nothing here says that one crashes. It does mean the
+benchmark cannot be completed on this machine until the crash is pinned down.
+
+## What would move it forward
+
+1. Run the harness against `pimc-off` first. If that setting survives 10 boards while
+   the PIMC ones do not, the crash is PIMC's and the point is proved cheaply.
+2. Catch the native fault: run the service under `lldb`, or check
+   `~/Library/Logs/DiagnosticReports` for a crash report naming `BGADLL.dylib`.
+3. Or run the whole benchmark on Linux, where `bin/dds3-linux` and the Linux BGADLL are
+   the builds that actually deploy — which was the original recommendation and remains
+   the fastest route to the numbers.
+
+No results are reported. Two boards from one setting is not a sample, and the settings
+cannot be compared on it.
