@@ -15,6 +15,7 @@ from collections import defaultdict
 from util import hand_to_str, calculate_seed, find_vuln_text, save_for_training
 from colorama import Fore, Style, init
 from nn.timing import ModelTimer
+from nn.whylog import Why
 
 init()
 class BotBid:
@@ -1168,6 +1169,9 @@ class BotBid:
         accepted_samples = accepted_samples[sorted_indices]
 
         n_samples = accepted_samples.shape[0]
+        # [ben-why] the layouts the rollout actually used, not the sample_hands_for_review
+        # handful that reaches the response.
+        Why.note(layouts=int(n_samples))
         
         hands_np = np.zeros((n_samples, 4, self.models.n_cards_bidding), dtype=np.int32)
         hands_np[:,turn_to_bid,:] = self.hand_bidding

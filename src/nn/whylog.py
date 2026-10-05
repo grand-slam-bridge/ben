@@ -122,6 +122,25 @@ def _clean(s):
     return ' '.join(str(s).split()) or '-'
 
 
+def _n_solved(w, result):
+    """
+    HOW MANY LAYOUTS THE DECISION ACTUALLY RESTED ON.
+
+    Not len(samples). Every response truncates that list to sample_hands_for_review - 20
+    in this config, and 20 upstream too - so it is a handful kept for a human to look at,
+    never the solve count. Reading n= off it reported a 200 layout opening lead as n=20
+    (2026-10-05). The real figure is recorded where it is known; `~` marks the fallback
+    to the review list, so a line can never quietly understate its own evidence again.
+    """
+    layouts = w['facts'].get('layouts')
+    if layouts is not None:
+        return 'n=%d' % layouts
+    try:
+        return 'n~%d' % len(result.get('samples') or [])
+    except Exception:
+        return 'n~0'
+
+
 def _tail(items):
     shown = items[:MAX_CANDIDATES]
     out = ' | '.join(shown)
@@ -146,6 +165,8 @@ def log_lead(result, seat, contract, hand, lead_accept_nn=None):
         cands = result.get('candidates') or []
         n = len(result.get('samples') or [])
         who = _clean(result.get('who'))
+        nfield = _n_solved(w, result if isinstance(result, dict) else {})
+
         rule = who
         if who.startswith('NN - best') and lead_accept_nn is not None:
             top = cands[0].get('insta_score') if cands else None
@@ -163,9 +184,9 @@ def log_lead(result, seat, contract, hand, lead_accept_nn=None):
                 bits.append('(%s)' % _clean(c.get('msg')))
             parts.append(' '.join(bits))
 
-        print('[ben-why] lead rid=%s seat=%s contract=%s hand=%s card=%s rule=%s n=%d q=%s :: %s' % (
+        print('[ben-why] lead rid=%s seat=%s contract=%s hand=%s card=%s rule=%s %s q=%s :: %s' % (
             w['rid'], seat, contract or '-', hand or '-', _clean(result.get('card')),
-            rule, n, _clean(result.get('quality')), _tail(parts)), flush=True)
+            rule, nfield, _clean(result.get('quality')), _tail(parts)), flush=True)
     except Exception:
         pass
 
@@ -194,6 +215,7 @@ def log_play(result, seat, trick_i, path):
         rec = w['cards']
         cands = (result.get('candidates') or []) if isinstance(result, dict) else []
         n = len(result.get('samples') or []) if isinstance(result, dict) else 0
+        nfield = _n_solved(w, result if isinstance(result, dict) else {})
 
         if f.get('pimc_rejected'):
             pimc_state = 'rejected(%s)' % _clean(f.get('pimc_reject_reason'))
@@ -225,11 +247,11 @@ def log_play(result, seat, trick_i, path):
         drop = ','.join('%s:%s' % (c, _n(s, 3)) for c, s, _t in w['dropped'][:8])
         thr = w['dropped'][0][2] if w['dropped'] else None
 
-        print('[ben-why] play rid=%s seat=%s trick=%s path=%s card=%s rule=%s pimc=%s playouts=%s n=%d q=%s :: %s%s' % (
+        print('[ben-why] play rid=%s seat=%s trick=%s path=%s card=%s rule=%s pimc=%s playouts=%s %s q=%s :: %s%s' % (
             w['rid'], seat, trick_i, path,
             _clean(result.get('card')) if isinstance(result, dict) else '-',
             _clean(result.get('who') if isinstance(result, dict) else None),
-            pimc_state, f.get('playouts', '-'), n,
+            pimc_state, f.get('playouts', '-'), nfield,
             _clean(result.get('quality') if isinstance(result, dict) else None),
             _tail(parts) or '(no candidates)',
             (' :: drop<%s=%s' % (_n(thr, 3), drop)) if drop else ''), flush=True)
@@ -251,6 +273,8 @@ def log_bid(result, seat, dealer, vul, ctx):
         cands = result.get('candidates') or []
         n = len(result.get('samples') or [])
         parts = []
+        nfield = _n_solved(w, result if isinstance(result, dict) else {})
+
         for c in cands:
             bits = ['%s nn=%s' % (c.get('call'), _n(c.get('insta_score'), 3))]
             for key, label in (('expected_score', 'score'), ('expected_imp', 'imp'),
@@ -262,9 +286,9 @@ def log_bid(result, seat, dealer, vul, ctx):
                 bits.append('(%s)' % _clean(c.get('who')))
             parts.append(' '.join(bits))
 
-        print('[ben-why] bid rid=%s seat=%s dealer=%s vul=%s ctx=%s call=%s rule=%s search=%s n=%d q=%s :: %s' % (
+        print('[ben-why] bid rid=%s seat=%s dealer=%s vul=%s ctx=%s call=%s rule=%s search=%s %s q=%s :: %s' % (
             w['rid'], seat, dealer or '-', vul if vul not in (None, '') else '-', ctx or '-',
-            _clean(result.get('bid')), _clean(result.get('who')), 'yes' if n else 'no', n,
+            _clean(result.get('bid')), _clean(result.get('who')), 'yes' if n else 'no', nfield,
             _clean(result.get('quality')), _tail(parts) or '(no candidates)'), flush=True)
     except Exception:
         pass

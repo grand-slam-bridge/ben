@@ -113,3 +113,19 @@ log_lead({"card": "SA", "who": None, "candidates": [{"card": "SA", "insta_score"
 log_bid({"bid": None, "who": None}, "S", None, None, None)
 log_play(None, "E", 3, "Calculated")
 print("-- survived --")
+
+print("-- 10. n= is the LAYOUTS SOLVED, not the 20 kept for review --")
+Why.start("room7/12")
+Why.note(layouts=200)                       # what double dummy actually solved
+log_lead(CardResp(card=Card.from_symbol("D3"), candidates=[cc("D3", 0.66, 9.8, 0.29, 1.23)],
+                  samples=["x"] * 20,       # sample_hands_for_review, the display cap
+                  shape=-1, hcp=-1, quality=0.8521,
+                  who="Simulation (IMP)", claim=-1).to_dict(),
+         "E", "2DN", "K93.AKT3.643.KJ5", 0.999)
+
+print("   and when nothing recorded it, ~ marks the review list rather than lying:")
+Why.start("-")
+log_lead(CardResp(card=Card.from_symbol("D3"), candidates=[cc("D3", 0.66, 9.8, 0.29, 1.23)],
+                  samples=["x"] * 20, shape=-1, hcp=-1, quality=0.8521,
+                  who="Simulation (IMP)", claim=-1).to_dict(),
+         "E", "2DN", "K93.AKT3.643.KJ5", 0.999)

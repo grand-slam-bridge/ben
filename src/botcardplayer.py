@@ -551,6 +551,8 @@ class CardPlayer:
     def get_cards_dd_evaluation(self, trick_i, leader_i, tricks52, current_trick52, players_states, probabilities_list, bidding_quality):
         
         n_samples = players_states[0].shape[0]
+        # [ben-why] the layouts solved here, not the handful echoed back for review.
+        Why.note(layouts=int(n_samples))
         assert n_samples > 0, "No samples for DDSolver"
 
         use_probability = self.models.use_probability 

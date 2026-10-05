@@ -109,6 +109,10 @@ class BotLead:
         t_start = time.time()
         lead_card_indexes, lead_softmax = self.get_opening_lead_candidates(auction)
         accepted_samples, sorted_bidding_score, tricks, p_hcp, p_shp, quality = self.simulate_outcomes_opening_lead(auction, lead_card_indexes, aceking)
+        # [ben-why] the layouts DOUBLE DUMMY ACTUALLY SOLVED. The samples list on the
+        # response is not this: it is truncated to sample_hands_for_review (20) purely so
+        # a human can look at a few, and reading n= off it understated 200 solves as 20.
+        Why.note(layouts=int(accepted_samples.shape[0]))
         contract = bidding.get_contract(auction)
         scores_by_trick = scoring.contract_scores_by_trick(contract, tuple(self.vuln))
 
