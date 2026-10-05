@@ -19,6 +19,7 @@ from alphamju.alphamju import alphamju
 from util import hand_to_str, follow_suit, calculate_seed, symbols
 from colorama import Fore, init
 from nn.timing import ModelTimer, PlayClock, timed_stage
+from nn.whylog import Why
 init()
 class CardPlayer:
 
@@ -255,6 +256,10 @@ class CardPlayer:
                 })
 
         reject_entire_pimc_set = len(invalid_candidates) > 0
+        Why.note(pimc_weight=None if reject_entire_pimc_set else weight,
+                 pimc_rejected=reject_entire_pimc_set,
+                 pimc_reject_reason=invalid_candidates[0]["reason"] if invalid_candidates else None,
+                 engine=engine)
 
         if reject_entire_pimc_set:
             print("[PIMC-GUARD-ALL]", json.dumps({
@@ -285,6 +290,9 @@ class CardPlayer:
                     + f"{engine} SET REJECTED|{raw_text}|"
                     + f"BEN DD 100%|{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
                 )
+                Why.card(card52,
+                         dd_tricks=e_tricks, dd_make=e_make,
+                         mrg_tricks=new_e_tricks, mrg_make=new_e_make)
 
             elif card52 in pimc_resp:
                 pimc_e_tricks, pimc_e_score, pimc_e_make, pimc_msg = pimc_resp[card52]
@@ -310,6 +318,10 @@ class CardPlayer:
                 new_msg += f"|{pimc_e_tricks:.2f} {pimc_e_score:.2f} {pimc_e_make:.2f}"
                 new_msg += f"|BEN DD {(1-weight)*100:.0f}%|"
                 new_msg += f"{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
+                Why.card(card52,
+                         dd_tricks=e_tricks, dd_make=e_make,
+                         pimc_tricks=pimc_e_tricks, pimc_make=pimc_e_make,
+                         mrg_tricks=new_e_tricks, mrg_make=new_e_make)
 
             else:
                 # Card not in PIMC response: use BEN-DD only for that card.
@@ -321,6 +333,9 @@ class CardPlayer:
                     + f"{engine} N/A|BEN DD 100%|"
                     + f"{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
                 )
+                Why.card(card52,
+                         dd_tricks=e_tricks, dd_make=e_make,
+                         mrg_tricks=new_e_tricks, mrg_make=new_e_make)
 
             merged_cards[card52] = (
                 new_e_tricks,
@@ -1027,6 +1042,9 @@ class CardPlayer:
             if len(claim_cards) == 0:
                 # Ignore cards not suggested by the NN
                 if insta_score < self.models.pimc_trust_NN:
+                    # [ben-why] a legal card removed before it is ever scored, so it
+                    # cannot appear in the response at any detail level.
+                    Why.dropped(card52, insta_score, self.models.pimc_trust_NN)
                     continue
                 if insta_score > self.models.play_reward_threshold_NN and self.models.play_reward_threshold_NN > 0:
                     if self.models.matchpoint:
@@ -1167,6 +1185,9 @@ class CardPlayer:
             if len(claim_cards) == 0:
             # Ignore cards not suggested by the NN
                 if insta_score < self.models.pimc_trust_NN:
+                    # [ben-why] a legal card removed before it is ever scored, so it
+                    # cannot appear in the response at any detail level.
+                    Why.dropped(card52, insta_score, self.models.pimc_trust_NN)
                     continue
                 if insta_score > self.models.play_reward_threshold_NN and self.models.play_reward_threshold_NN > 0:
                     if self.models.matchpoint:

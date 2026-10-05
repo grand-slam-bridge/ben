@@ -81,6 +81,8 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from threading import Lock
 from nn.timing import ModelTimer, PlayClock
+from nn import whylog
+from nn.whylog import Why
 
 # Intil fixed in Keras, this is needed to remove a wrong warning
 import warnings
@@ -735,6 +737,27 @@ model_lock_bid = Lock()
 model_lock_play = Lock()
 
 
+def _ben_rid():
+    """
+    [ben-why] WHICH TABLE THIS LINE BELONGS TO.
+
+    The site does not currently send one - /bid, /lead and /play carry hand, seat,
+    dealer, vul and ctx and nothing else - so this reads whichever of these turns up
+    and falls back to '-'. Adding `room` and `board` to the params in server.js is
+    enough to fill it in; nothing here has to change when it does.
+    """
+    try:
+        for key in ('rid', 'room', 'table', 'game'):
+            v = request.args.get(key)
+            if v:
+                b = request.args.get('board') or request.args.get('deal')
+                return ('%s/%s' % (v, b)) if b else v
+        b = request.args.get('board') or request.args.get('deal')
+        return b or '-'
+    except Exception:
+        return '-'
+
+
 def _ben_time_play(path, t_lock, t_work, t_done):
     """
     [ben-time] ONE LINE PER CARD. total_ms is the whole decision, wait_ms the part of it
@@ -1012,12 +1035,14 @@ def bid():
         # [ben-time] one line per bid. The lock is the only place a request waits for
         # another, so the gap either side of it IS the queueing time.
         _t_lock = time.time()
+        Why.start(_ben_rid())
         with model_lock_bid:
             _t_work = time.time()
             bid = hint_bot.bid(auction)
             _t_done = time.time()
 
         full_result = bid.to_dict()
+        whylog.log_bid(full_result, seat, dealer, v, ctx)
         try:
             _cands = full_result.get('candidates') or []
             _top = _cands[0].get('insta_score') if _cands else None
@@ -1122,6 +1147,7 @@ def lead():
         # for another, so the gap either side of it IS the queueing time.
         _t_lock = time.time()
         PlayClock.start()
+        Why.start(_ben_rid())
         with model_lock_play:
             _t_work = time.time()
             card_resp = hint_bot.find_opening_lead(auction, aceking)
@@ -1131,6 +1157,10 @@ def lead():
         #card_resp.who = user
         print("Leading:", card_resp.card.symbol())
         result = card_resp.to_dict()
+        # Before the details=false strip below - which is what the site asks for, and which
+        # removes the candidates and the samples this line is made of.
+        whylog.log_lead(result, seat, bidding.get_contract(auction), hand,
+                        getattr(models, 'lead_accept_nn', None))
         if not details:
             if "candidates" in result: del result["candidates"]
             if "samples" in result: del result["samples"]
@@ -1276,13 +1306,18 @@ def play():
         # Forced and Follow are shortcuts that never reach sampling, DD or PIMC at all.
         _t_lock = time.time()
         PlayClock.start()
+        Why.start(_ben_rid())
         with model_lock_play:
             _t_work = time.time()
             card_resp, player_i, msg =  play_api(dealer_i, vuln[0], vuln[1], hands, models, sampler, contract, strain_i, decl_i, auction, cards, cardplayer, False, features, effective_verbose)
             _t_done = time.time()
         _ben_time_play(msg, _t_lock, _t_work, _t_done)
+        # PIMC counts its own playouts into the stage clock; the why line reports the
+        # same number rather than counting it a second time.
+        Why.note(playouts=PlayClock.get()['playouts'])
         print("Playing:", card_resp.card.symbol(), msg)
         result = card_resp.to_dict()
+        whylog.log_play(result, seat, len(cards) // 4 + 1, msg)
         if not details:
             if "candidates" in result: del result["candidates"]
             if "samples" in result: del result["samples"]
