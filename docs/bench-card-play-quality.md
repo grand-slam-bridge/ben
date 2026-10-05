@@ -311,3 +311,32 @@ afterwards (see the commit "Score the cards after the board, not while BEN is th
 
 Time per calculated card: median 0.5 s, **max 73.7 s**. The maximum is worth remembering when
 setting the site's 20 s first-attempt budget.
+
+## Item 4 — the `--config` crash: the diagnosis was wrong
+
+The previous session concluded the service "dies silently with `--config <copy>.conf` but not with
+a plain launch". **That is not what is happening.** Compared line by line:
+
+- **The config copy is byte-for-byte identical** to `src/config/default_api.conf` (`diff` is empty).
+  It cannot be the cause of anything.
+- Both launches load the solver: `PIMC enabled. Version 0.9.9.1 DDS: haglund`, zero
+  "Unable to load shared library" lines in either.
+- The `bench_run_all.sh`-style launch gives the service the right environment, checked from the
+  running process: `cwd=.../src`, `DYLD_LIBRARY_PATH=.../bin/BGA/macos/arm64`, `PYTHONPATH`
+  pointing at the built `dds3`, `BEN_HOME` correct, and `Loading config file /tmp/.../stop8.conf`.
+
+**What the crash actually was.** `~/Library/Logs/DiagnosticReports` holds three reports, all at
+21:29:05, all the same shape: `SIGABRT`, and the faulting thread is inside **`BGADLL.dylib`** —
+PIMC's own native library — calling `abort()`. Not Python, not the config, not the loader. BGADLL
+is a .NET Native AOT library and aborts the whole process on an unhandled exception.
+
+**And it is intermittent, not deterministic.** Since those 21:29 reports there has been **no new
+crash report at all**, while the service has served **625 cards** — 520 for the completed deployed
+run (plain launch) and 105+ for a `stop8` run started exactly the `bench_run_all.sh` way, both
+still healthy. 15 cards before a crash in one run and 625 without one in the next is a flaky
+native fault, not a property of how the service is started.
+
+So there is nothing to "fix" in the launch; the earlier conclusion was a coincidence read as a
+cause. What a long run needs instead is **tolerance**: `bench_run_all.sh` should notice a dead
+service, restart it, and retry or skip the board, rather than turning one abort into ten failed
+boards. That change is not made yet.
