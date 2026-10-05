@@ -15,7 +15,32 @@ from collections import defaultdict
 from util import hand_to_str, calculate_seed, find_vuln_text, save_for_training
 from colorama import Fore, Style, init
 from nn.timing import ModelTimer
-from nn.whylog import Why
+"""
+LOGGING MUST NEVER BE THE REASON A CARD FAILS (2026-10-05).
+
+Every recorder call in this file goes through _why, and _why cannot raise. This is not
+belt-and-braces: a forgotten `from nn.whylog import Why` in THIS file took out every
+robot opening lead in production - the route turned the NameError into
+`An error occurred: name 'Why' is not defined`, the site's two attempts both failed,
+and a fallback card was played instead. The decision itself was perfect; only the line
+about it was broken.
+
+A try/except at the CALL is what covers that, because NameError is an Exception too. An
+import that is missing cannot be guarded by the module that is missing - so the other
+half of the defence is scripts/check-undefined-names.py, which is what finds the import.
+"""
+try:
+    from nn.whylog import Why as _Why
+except Exception:
+    _Why = None
+
+
+def _why(method, *args, **kwargs):
+    try:
+        getattr(_Why, method)(*args, **kwargs)
+    except Exception:
+        pass
+
 
 init()
 class BotBid:
@@ -1171,7 +1196,7 @@ class BotBid:
         n_samples = accepted_samples.shape[0]
         # [ben-why] the layouts the rollout actually used, not the sample_hands_for_review
         # handful that reaches the response.
-        Why.note(layouts=int(n_samples))
+        _why('note', layouts=int(n_samples))
         
         hands_np = np.zeros((n_samples, 4, self.models.n_cards_bidding), dtype=np.int32)
         hands_np[:,turn_to_bid,:] = self.hand_bidding

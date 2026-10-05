@@ -129,3 +129,18 @@ log_lead(CardResp(card=Card.from_symbol("D3"), candidates=[cc("D3", 0.66, 9.8, 0
                   samples=["x"] * 20, shape=-1, hcp=-1, quality=0.8521,
                   who="Simulation (IMP)", claim=-1).to_dict(),
          "E", "2DN", "K93.AKT3.643.KJ5", 0.999)
+
+print("-- 11. [ben-slow] fires over 5 s and names the stage; stays quiet under it --")
+import re
+_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "gameapi.py")).read()
+_blk = re.search(r"BEN_SLOW_MS = \d+\n\n\ndef _ben_slow\(.*?\n        pass\n", _src, re.S).group(0)
+_ns = {"Why": Why}
+exec(_blk, _ns)
+Why.start("KBC1/1")
+_ns["_ben_slow"]("play", "Calculated", 22305, 9200,
+                 {"sampling": 1800.0, "dd": 6400.0, "pimc": 4100.0, "playouts": 100})
+_ns["_ben_slow"]("lead", "lead", 11200, 0,
+                 {"sampling": 2600.0, "dd": 8200.0, "pimc": 0.0, "playouts": 0})
+print("   (nothing should follow this line - 900 ms is under the threshold)")
+_ns["_ben_slow"]("play", "Calculated", 900, 0,
+                 {"sampling": 100.0, "dd": 500.0, "pimc": 200.0, "playouts": 40})
