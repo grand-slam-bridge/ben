@@ -14,6 +14,33 @@ from bidding import bidding
 import carding
 from util import hand_to_str, expected_tricks_sd, p_defeat_contract, follow_suit, calculate_seed
 from nn.timing import PlayClock
+
+"""
+LOGGING MUST NEVER BE THE REASON A CARD FAILS (2026-10-05).
+
+Every recorder call in this file goes through _why, and _why cannot raise. This is not
+belt-and-braces: a forgotten `from nn.whylog import Why` in THIS file took out every
+robot opening lead in production - the route turned the NameError into
+`An error occurred: name 'Why' is not defined`, the site's two attempts both failed,
+and a fallback card was played instead. The decision itself was perfect; only the line
+about it was broken.
+
+A try/except at the CALL is what covers that, because NameError is an Exception too. An
+import that is missing cannot be guarded by the module that is missing - so the other
+half of the defence is scripts/check-undefined-names.py, which is what finds the import.
+"""
+try:
+    from nn.whylog import Why as _Why
+except Exception:
+    _Why = None
+
+
+def _why(method, *args, **kwargs):
+    try:
+        getattr(_Why, method)(*args, **kwargs)
+    except Exception:
+        pass
+
 from colorama import Fore, init
 
 init()
@@ -112,7 +139,7 @@ class BotLead:
         # [ben-why] the layouts DOUBLE DUMMY ACTUALLY SOLVED. The samples list on the
         # response is not this: it is truncated to sample_hands_for_review (20) purely so
         # a human can look at a few, and reading n= off it understated 200 solves as 20.
-        Why.note(layouts=int(accepted_samples.shape[0]))
+        _why('note', layouts=int(accepted_samples.shape[0]))
         contract = bidding.get_contract(auction)
         scores_by_trick = scoring.contract_scores_by_trick(contract, tuple(self.vuln))
 

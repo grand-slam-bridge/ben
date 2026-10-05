@@ -84,6 +84,26 @@ from nn.timing import ModelTimer, PlayClock
 from nn import whylog
 from nn.whylog import Why
 
+
+def _log(what, *args, **kwargs):
+    """
+    EVERY LOGGING CALL IN A ROUTE GOES THROUGH HERE, AND IT CANNOT RAISE (2026-10-05).
+
+    A route's own `except Exception` turns anything that escapes into HTTP 400, so a fault
+    in a log line is indistinguishable to the site from BEN having no answer. That is not
+    hypothetical: a missing import in botopeninglead.py became
+    `An error occurred: name 'Why' is not defined` on every robot opening lead, and the
+    site played a fallback card. The decision was fine; only the line about it was broken.
+    """
+    try:
+        (whylog.log_bid if what == 'bid' else
+         whylog.log_lead if what == 'lead' else
+         whylog.log_play if what == 'play' else
+         Why.start if what == 'start' else
+         Why.note)(*args, **kwargs)
+    except Exception as ex:
+        print('[ben-why] line could not be written (%s): %s' % (what, ex), flush=True)
+
 # Intil fixed in Keras, this is needed to remove a wrong warning
 import warnings
 warnings.filterwarnings("ignore")
@@ -758,6 +778,38 @@ def _ben_rid():
         return '-'
 
 
+BEN_SLOW_MS = 5000
+
+
+def _ben_slow(kind, path, total_ms, wait_ms, c):
+    """
+    [ben-slow] - A DECISION THAT TOOK MORE THAN FIVE SECONDS, AND WHERE IT WENT.
+
+    The site gives a card two attempts and then plays one of its own, so a decision past
+    about nine seconds has already cost a real card. [ben-time] is on every decision and
+    is therefore easy to lose in the noise; this one fires rarely and names the stage, so
+    the next slow card arrives with its own explanation instead of only a timestamp.
+
+    Nothing is measured here that [ben-time] did not already measure - same clock, same
+    stages, one extra comparison per decision.
+    """
+    try:
+        if total_ms < BEN_SLOW_MS:
+            return
+        w = Why.get()
+        stages = {'sampling': c['sampling'], 'dd': c['dd'], 'pimc': c['pimc']}
+        worst = max(stages, key=lambda k: stages[k])
+        # Whatever the three stages do not account for: the softmax, the merge, the choice.
+        other = max(0.0, total_ms - wait_ms - sum(stages.values()))
+        print('[ben-slow] %s rid=%s path=%s total_ms=%d wait_ms=%d sampling_ms=%d dd_ms=%d '
+              'pimc_ms=%d other_ms=%d playouts=%s worst=%s' % (
+              kind, w.get('rid', '-'), path, total_ms, wait_ms,
+              stages['sampling'], stages['dd'], stages['pimc'], other,
+              c.get('playouts', '-'), worst), flush=True)
+    except Exception:
+        pass
+
+
 def _ben_time_play(path, t_lock, t_work, t_done):
     """
     [ben-time] ONE LINE PER CARD. total_ms is the whole decision, wait_ms the part of it
@@ -769,9 +821,11 @@ def _ben_time_play(path, t_lock, t_work, t_done):
     """
     try:
         c = PlayClock.get()
+        total = (t_done - t_lock) * 1000
         print('[ben-time] play path=%s total_ms=%d wait_ms=%d sampling_ms=%d dd_ms=%d pimc_ms=%d playouts=%d' % (
-            path, (t_done - t_lock) * 1000, (t_work - t_lock) * 1000,
+            path, total, (t_work - t_lock) * 1000,
             c['sampling'], c['dd'], c['pimc'], c['playouts']), flush=True)
+        _ben_slow('play', path, total, (t_work - t_lock) * 1000, c)
     except Exception:
         pass
 
@@ -1035,14 +1089,14 @@ def bid():
         # [ben-time] one line per bid. The lock is the only place a request waits for
         # another, so the gap either side of it IS the queueing time.
         _t_lock = time.time()
-        Why.start(_ben_rid())
+        _log('start', _ben_rid())
         with model_lock_bid:
             _t_work = time.time()
             bid = hint_bot.bid(auction)
             _t_done = time.time()
 
         full_result = bid.to_dict()
-        whylog.log_bid(full_result, seat, dealer, v, ctx)
+        _log('bid', full_result, seat, dealer, v, ctx)
         try:
             _cands = full_result.get('candidates') or []
             _top = _cands[0].get('insta_score') if _cands else None
@@ -1052,6 +1106,9 @@ def bid():
                 'sampled' if _sampled else 'no-search',
                 ('%.3f' % _top) if _top is not None else 'na',
                 (_t_done - _t_lock) * 1000, (_t_work - _t_lock) * 1000), flush=True)
+            _ben_slow('bid', 'sampled' if _sampled else 'no-search',
+                      (_t_done - _t_lock) * 1000, (_t_work - _t_lock) * 1000,
+                      {'sampling': 0.0, 'dd': 0.0, 'pimc': 0.0, 'playouts': '-'})
         except Exception:
             pass
         full_result["explanations"] = explanations
@@ -1147,7 +1204,7 @@ def lead():
         # for another, so the gap either side of it IS the queueing time.
         _t_lock = time.time()
         PlayClock.start()
-        Why.start(_ben_rid())
+        _log('start', _ben_rid())
         with model_lock_play:
             _t_work = time.time()
             card_resp = hint_bot.find_opening_lead(auction, aceking)
@@ -1159,8 +1216,8 @@ def lead():
         result = card_resp.to_dict()
         # Before the details=false strip below - which is what the site asks for, and which
         # removes the candidates and the samples this line is made of.
-        whylog.log_lead(result, seat, bidding.get_contract(auction), hand,
-                        getattr(models, 'lead_accept_nn', None))
+        _log('lead', result, seat, bidding.get_contract(auction), hand,
+             getattr(models, 'lead_accept_nn', None))
         if not details:
             if "candidates" in result: del result["candidates"]
             if "samples" in result: del result["samples"]
@@ -1306,7 +1363,7 @@ def play():
         # Forced and Follow are shortcuts that never reach sampling, DD or PIMC at all.
         _t_lock = time.time()
         PlayClock.start()
-        Why.start(_ben_rid())
+        _log('start', _ben_rid())
         with model_lock_play:
             _t_work = time.time()
             card_resp, player_i, msg =  play_api(dealer_i, vuln[0], vuln[1], hands, models, sampler, contract, strain_i, decl_i, auction, cards, cardplayer, False, features, effective_verbose)
@@ -1314,10 +1371,10 @@ def play():
         _ben_time_play(msg, _t_lock, _t_work, _t_done)
         # PIMC counts its own playouts into the stage clock; the why line reports the
         # same number rather than counting it a second time.
-        Why.note(playouts=PlayClock.get()['playouts'])
+        _log('note', playouts=PlayClock.get()['playouts'])
         print("Playing:", card_resp.card.symbol(), msg)
         result = card_resp.to_dict()
-        whylog.log_play(result, seat, len(cards) // 4 + 1, msg)
+        _log('play', result, seat, len(cards) // 4 + 1, msg)
         if not details:
             if "candidates" in result: del result["candidates"]
             if "samples" in result: del result["samples"]

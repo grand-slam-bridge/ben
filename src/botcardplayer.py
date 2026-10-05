@@ -19,7 +19,32 @@ from alphamju.alphamju import alphamju
 from util import hand_to_str, follow_suit, calculate_seed, symbols
 from colorama import Fore, init
 from nn.timing import ModelTimer, PlayClock, timed_stage
-from nn.whylog import Why
+"""
+LOGGING MUST NEVER BE THE REASON A CARD FAILS (2026-10-05).
+
+Every recorder call in this file goes through _why, and _why cannot raise. This is not
+belt-and-braces: a forgotten `from nn.whylog import Why` in THIS file took out every
+robot opening lead in production - the route turned the NameError into
+`An error occurred: name 'Why' is not defined`, the site's two attempts both failed,
+and a fallback card was played instead. The decision itself was perfect; only the line
+about it was broken.
+
+A try/except at the CALL is what covers that, because NameError is an Exception too. An
+import that is missing cannot be guarded by the module that is missing - so the other
+half of the defence is scripts/check-undefined-names.py, which is what finds the import.
+"""
+try:
+    from nn.whylog import Why as _Why
+except Exception:
+    _Why = None
+
+
+def _why(method, *args, **kwargs):
+    try:
+        getattr(_Why, method)(*args, **kwargs)
+    except Exception:
+        pass
+
 init()
 class CardPlayer:
 
@@ -256,7 +281,7 @@ class CardPlayer:
                 })
 
         reject_entire_pimc_set = len(invalid_candidates) > 0
-        Why.note(pimc_weight=None if reject_entire_pimc_set else weight,
+        _why('note', pimc_weight=None if reject_entire_pimc_set else weight,
                  pimc_rejected=reject_entire_pimc_set,
                  pimc_reject_reason=invalid_candidates[0]["reason"] if invalid_candidates else None,
                  engine=engine)
@@ -290,7 +315,7 @@ class CardPlayer:
                     + f"{engine} SET REJECTED|{raw_text}|"
                     + f"BEN DD 100%|{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
                 )
-                Why.card(card52,
+                _why('card', card52,
                          dd_tricks=e_tricks, dd_make=e_make,
                          mrg_tricks=new_e_tricks, mrg_make=new_e_make)
 
@@ -318,7 +343,7 @@ class CardPlayer:
                 new_msg += f"|{pimc_e_tricks:.2f} {pimc_e_score:.2f} {pimc_e_make:.2f}"
                 new_msg += f"|BEN DD {(1-weight)*100:.0f}%|"
                 new_msg += f"{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
-                Why.card(card52,
+                _why('card', card52,
                          dd_tricks=e_tricks, dd_make=e_make,
                          pimc_tricks=pimc_e_tricks, pimc_make=pimc_e_make,
                          mrg_tricks=new_e_tricks, mrg_make=new_e_make)
@@ -333,7 +358,7 @@ class CardPlayer:
                     + f"{engine} N/A|BEN DD 100%|"
                     + f"{e_tricks:.2f} {e_score:.2f} {e_make:.2f}"
                 )
-                Why.card(card52,
+                _why('card', card52,
                          dd_tricks=e_tricks, dd_make=e_make,
                          mrg_tricks=new_e_tricks, mrg_make=new_e_make)
 
@@ -483,9 +508,24 @@ class CardPlayer:
         # When play_status is discard, it might be a good idea to use PIMC even if it is not enabled
         preempted = features.get("preempted", False)
 
-        if play_status == "discard" and not self.models.pimc_use_discard:
+        # DEAD BRANCH, AND LEFT DEAD ON PURPOSE (2026-10-05, found by pyflakes).
+        #
+        # Three faults on these two lines, and the first is what hid the other two:
+        #   1. get_play_status() returns "Discard" capitalised - see util.py:237 - and so
+        #      does every other comparison in the codebase (carding.py:81, line 478 just
+        #      above). Only this one says "discard", so the branch has never once run.
+        #   2. the setting is pimc_use_discarding; self.models.pimc_use_discard does not
+        #      exist on Models and would be an AttributeError.
+        #   3. merged_card_resp was never assigned here - a NameError, which is what
+        #      pyflakes reported.
+        #
+        # Only fault 3 is repaired, to dd_resp_cards, which is what the BEN-DD-only branch
+        # below passes. Fixing 1 and 2 would WAKE the branch and change the card chosen on
+        # every discard, which is a bridge decision for whoever owns the discard policy -
+        # not a side effect of a logging fix.
+        if play_status == "discard" and not getattr(self.models, "pimc_use_discard", True):
             dd_resp_cards, claims = self.get_cards_dd_evaluation(trick_i, leader_i, tricks52, current_trick52, players_states, probability_of_occurence, quality)
-            self.update_with_alphamju(card_resp_alphamju, merged_card_resp)
+            self.update_with_alphamju(card_resp_alphamju, dd_resp_cards)
             card_resp = self.pick_card_after_dd_eval(trick_i, leader_i, current_trick52, tricks52, players_states, dd_resp_cards, bidding_scores, quality, samples, play_status, self.missing_cards, claims, shown_out_suits, card_scores_nn)
         else:                    
             if self.pimc_declaring and (self.player_i == 1 or self.player_i == 3):
@@ -552,7 +592,7 @@ class CardPlayer:
         
         n_samples = players_states[0].shape[0]
         # [ben-why] the layouts solved here, not the handful echoed back for review.
-        Why.note(layouts=int(n_samples))
+        _why('note', layouts=int(n_samples))
         assert n_samples > 0, "No samples for DDSolver"
 
         use_probability = self.models.use_probability 
@@ -1046,7 +1086,7 @@ class CardPlayer:
                 if insta_score < self.models.pimc_trust_NN:
                     # [ben-why] a legal card removed before it is ever scored, so it
                     # cannot appear in the response at any detail level.
-                    Why.dropped(card52, insta_score, self.models.pimc_trust_NN)
+                    _why('dropped', card52, insta_score, self.models.pimc_trust_NN)
                     continue
                 if insta_score > self.models.play_reward_threshold_NN and self.models.play_reward_threshold_NN > 0:
                     if self.models.matchpoint:
@@ -1189,7 +1229,7 @@ class CardPlayer:
                 if insta_score < self.models.pimc_trust_NN:
                     # [ben-why] a legal card removed before it is ever scored, so it
                     # cannot appear in the response at any detail level.
-                    Why.dropped(card52, insta_score, self.models.pimc_trust_NN)
+                    _why('dropped', card52, insta_score, self.models.pimc_trust_NN)
                     continue
                 if insta_score > self.models.play_reward_threshold_NN and self.models.play_reward_threshold_NN > 0:
                     if self.models.matchpoint:

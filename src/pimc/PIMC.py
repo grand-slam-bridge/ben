@@ -51,7 +51,32 @@ from pimc.BGADLL_Native import is_available as _native_available, _get_lib, _rea
     NativePIMC, NativeHand, NativePlay, NativeConstraints, NativeExtensions, NativeMacros, NativeCard
 USE_NATIVE_BGA = _native_available()
 
-from nn.timing import PlayClock
+"""
+LOGGING MUST NEVER BE THE REASON A CARD FAILS (2026-10-05).
+
+Every recorder call in this file goes through _why, and _why cannot raise. This is not
+belt-and-braces: a forgotten `from nn.whylog import Why` in THIS file took out every
+robot opening lead in production - the route turned the NameError into
+`An error occurred: name 'Why' is not defined`, the site's two attempts both failed,
+and a fallback card was played instead. The decision itself was perfect; only the line
+about it was broken.
+
+A try/except at the CALL is what covers that, because NameError is an Exception too. An
+import that is missing cannot be guarded by the module that is missing - so the other
+half of the defence is scripts/check-undefined-names.py, which is what finds the import.
+"""
+try:
+    from nn.timing import PlayClock as _Why
+except Exception:
+    _Why = None
+
+
+def _why(method, *args, **kwargs):
+    try:
+        getattr(_Why, method)(*args, **kwargs)
+    except Exception:
+        pass
+
 
 class BGADLL:
 
@@ -559,7 +584,7 @@ class BGADLL:
             sys.exit(1)
         # Allow running threads to finalize
         time.sleep(0.05)
-        PlayClock.add_playouts(getattr(self.pimc, 'Playouts', None))
+        _why('add_playouts', getattr(self.pimc, 'Playouts', None))
         if self.verbose:    
             print("max_playout",self.max_playout)
             print(f"Playouts: {self.pimc.Playouts}")
