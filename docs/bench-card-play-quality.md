@@ -90,3 +90,62 @@ knows where every card is, scores better than it deserves. Steps 3 and 5 are the
 network overrides that, and `reward_lead_partner_suit` / `trump_lead_penalty` are hand-tuned
 corrections bolted on afterwards for the same reason. **Measuring how often this bites is
 precisely item 4's unrun half**, and it needs the solver.
+
+---
+
+# Update, 2026-10-05 — the solver is built; the benchmark is not run
+
+Branch `bench/card-play-harness`.
+
+## Item 1 — the solver, built from source ✅
+
+`xcode-select --install` reported **Command Line Tools are already installed**, so there was no
+popup to click. Apple clang 17 compiles and links C++ fine.
+
+Bazel is **not** needed. The DDS repository builds its Python interface with bazel, but that
+interface is pybind11 over two source files, so clang++ compiles it directly against the 40
+library sources. `scripts/build-dds3-macos.sh` does exactly that, in about 40 seconds, and runs
+its own self-test. It writes **outside the repository** and leaves `bin/dds3-linux` — the build the
+service deploys — untouched.
+
+Two things the bazel build supplies that the script has to reproduce by hand: `<dds/dds.hpp>` is
+included with a prefix bazel adds via `include_prefix`, so the script stages a `dds/` symlink; and
+the sources live in nine subdirectories under `library/src`, not just the top one.
+
+Verified: `par NS 990` and 0 tricks to East against AKQ in every suit — both correct.
+
+## Item 2 — partly proven
+
+**The opening lead works, twice.** With the deployed settings and the built solver:
+
+```text
+hand K93.AKT3.643.KJ5, contract 2D  ->  D3   who=Simulation (IMP)  1.21 s
+3NT by North, East on lead          ->  CK   who=Simulation (IMP)  1.27 s
+```
+
+The first of those **reproduces the live `[ben-why]` line exactly** — same hand, same contract,
+same card, same rule. That is the strongest evidence available that this local setup matches the
+deployed one.
+
+Everything loads: `BBA 8740`, `SuitC 0.9.0.9`, `PIMC 0.9.9.1`, `PIMCDef 0.9.9.1`,
+`DDSolver 3.0.0 Max threads 2`. **No .NET is required** — PIMC and BBA are native ctypes
+libraries now. PIMC's own bundled DDS needs
+`DYLD_LIBRARY_PATH=<repo>/bin/BGA/macos/arm64` and a `libdds.dylib` name it will find.
+
+**A card in the play is not yet proven.** Calling `play_api` directly raised
+`'NoneType' object has no attribute 'set_hcp_constraints'` — the per-seat PIMC objects are set up
+by the `/play` route's own preamble, which a direct call skips. This is a fault in how I drove it,
+not a missing dependency: every component the card path needs is loaded. Starting `gameapi.py` and
+asking `/play` over HTTP is what settles it, and that is the next step.
+
+## Items 3–7 — NOT RUN
+
+No numbers are reported, and none are invented. These need item 2 finished first, and then a
+self-play harness driving four robots through 52 cards, scoring every card against double dummy,
+across six settings and 100 deals — roughly 31,000 card decisions. At the ~1.2 s per decision
+measured above for a lead, that is hours of compute, beyond what this session had left after
+building the solver.
+
+What now exists that did not before: **a working solver on this machine**, a reproducible script
+to rebuild it, and a verified local setup that reproduces a live decision card-for-card. The
+benchmark is now a matter of running it rather than of whether it can run at all.
