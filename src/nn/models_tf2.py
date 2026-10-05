@@ -261,6 +261,136 @@ class Models:
                 except:
                     pass
 
+    # -----------------------------------------------------------------------
+    # [ben-warm] EVERY MODEL, ONCE, BEFORE ANYBODY ASKS (2026-10-05)
+    #
+    # The first inference through a Keras model builds its graph, and the play
+    # networks are PER SEAT - lefty, dummy, righty and declarer, in notrump and
+    # suit versions, eight of them - so each seat's first card of a session paid
+    # its own warm-up. Live that showed as 1.5-6 s for the early cards of a hand
+    # and under a second afterwards.
+    #
+    # warm_up() above only touched the eight play nets. This covers the bidder,
+    # the opponent bidder, bidding info, contract, trick, both lead nets and both
+    # single-dummy estimators as well - every model the API can reach.
+    #
+    # The dummy input is built from each model's OWN declared input shape rather
+    # than from a hard-coded 298, so a model whose features change still gets
+    # warmed instead of silently throwing and being skipped.
+    #
+    # Speed only. No decision changes: the inputs are zeros and the outputs are
+    # discarded.
+    # -----------------------------------------------------------------------
+    def warm_up_all(self, log=print):
+        """
+        Run one dummy inference through every model. Returns a list of
+        (name, milliseconds, error-or-None). Never raises.
+        """
+        import numpy as np
+        import time as _time
+
+        def zeros_for(specs):
+            made = []
+            for t in specs:
+                dims = [1 if (d is None or int(d) == 0) else int(d) for d in t.shape]
+                made.append(np.zeros(dims, dtype=np.float16))
+            return made
+
+        def candidate_inputs(wrapper):
+            """
+            Several shapes to try, because the entry point and the model do not always
+            agree and neither one alone is enough.
+
+            The tf.function's input_signature is what pred_fun is called WITH, but it can
+            leave every dimension unknown - bidding info declares (None, None, None), and
+            filling those with 1 gives a one-feature input the model rejects. The Keras
+            model knows the feature count but not the sequence rank. So: the signature
+            with its unknown dims filled from the model where the ranks allow, then the
+            signature with 1s, then the model's own shape. First one that runs, wins.
+            """
+            sig = None
+            for attr in ('pred_fun_tf', 'pred_fun_seq_tf'):
+                fn = getattr(wrapper, attr, None)
+                sig = getattr(fn, 'input_signature', None) or sig
+            model_inputs = getattr(getattr(wrapper, 'model', None), 'inputs', None) or []
+
+            tries = []
+            if sig:
+                if model_inputs and len(sig) == len(model_inputs):
+                    merged = []
+                    for spec, mi in zip(sig, model_inputs):
+                        dims = [int(d) if d is not None else None for d in spec.shape]
+                        feats = [int(d) for d in mi.shape if d is not None]
+                        if dims and dims[-1] is None and feats:
+                            dims[-1] = feats[-1]
+                        merged.append([1 if d is None else d for d in dims])
+                    tries.append([np.zeros(d, dtype=np.float16) for d in merged])
+                tries.append(zeros_for(sig))
+            if model_inputs:
+                tries.append(zeros_for(model_inputs))
+            return tries
+
+        def entry(wrapper):
+            # Bidder exposes pred_fun_seq; everything else pred_fun.
+            return getattr(wrapper, 'pred_fun', None) or getattr(wrapper, 'pred_fun_seq', None)
+
+        targets = [
+            ('bidder', self.bidder_model),
+            ('opponent', self.opponent_model),
+            ('binfo', self.binfo_model),
+            ('contract', self.contract_model),
+            ('trick', self.trick_model),
+            ('lead_suit', self.lead_suit_model),
+            ('lead_nt', self.lead_nt_model),
+            ('sd', self.sd_model),
+            ('sd_no_lead', self.sd_model_no_lead),
+        ]
+        for i, pm in enumerate(self.player_models or []):
+            targets.append(('play:' + str(getattr(pm, 'name', i)), pm))
+
+        done, total_ms = [], 0.0
+        for name, wrapper in targets:
+            if wrapper is None:
+                continue
+            t0 = _time.perf_counter()
+            err = None
+            try:
+                fn = entry(wrapper)
+                if fn is None:
+                    raise AttributeError('no pred_fun')
+                tries = candidate_inputs(wrapper)
+                if not tries:
+                    raise ValueError('no declared input shape')
+                last = None
+                for args in tries:
+                    try:
+                        fn(*args)
+                        last = None
+                        break
+                    except Exception as attempt_ex:
+                        last = attempt_ex
+                if last is not None:
+                    raise last
+            except Exception as ex:
+                # One model failing to warm must not stop the others, and must
+                # not stop the service: this is speed, not correctness.
+                err = '%s: %s' % (type(ex).__name__, ex)
+            ms = (_time.perf_counter() - t0) * 1000
+            total_ms += ms
+            done.append((name, ms, err))
+            try:
+                log('[ben-warm] %-18s %7.0f ms%s' % (name, ms, '  FAILED ' + err if err else ''))
+            except Exception:
+                pass
+
+        failed = sum(1 for _, _, e in done if e)
+        try:
+            log('[ben-warm] total %d model(s) in %.0f ms%s' % (
+                len(done), total_ms, ', %d could not be warmed' % failed if failed else ''))
+        except Exception:
+            pass
+        return done
+
     @classmethod
     def from_conf(cls, conf: ConfigParser, base_path=None, verbose=False) -> "Models":
         if base_path is None:
