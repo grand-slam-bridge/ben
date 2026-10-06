@@ -135,7 +135,22 @@ class BotLead:
         # We should check that auction match, that we are on lead
         t_start = time.time()
         lead_card_indexes, lead_softmax = self.get_opening_lead_candidates(auction)
-        accepted_samples, sorted_bidding_score, tricks, p_hcp, p_shp, quality = self.simulate_outcomes_opening_lead(auction, lead_card_indexes, aceking)
+
+        # THE NET LEADS, AND NOTHING IS SIMULATED (2026-10-06).
+        #
+        # Before simulate_outcomes_opening_lead, so no deal is dealt and no layout is
+        # solved. This is the lead equivalent of card_net_only: for measuring the net on
+        # its own, not a playing setting. Off by default.
+        if getattr(self.models, 'lead_net_only', False):
+            best = max(lead_card_indexes, key=lambda ci: lead_softmax[0, ci])
+            return CardResp(
+                card=Card.from_code(int(best), xcards=True),
+                candidates=[CandidateCard(card=Card.from_code(int(ci), xcards=True),
+                                          insta_score=lead_softmax[0, ci])
+                            for ci in sorted(lead_card_indexes,
+                                             key=lambda ci: -lead_softmax[0, ci])],
+                samples=[], shape=-1, hcp=-1, quality=None, who="net-only", claim=-1)
+        accepted_samples, sorted_bidding_score, tricks, p_hcp, p_shp, quality, lead_card_indexes = self.simulate_outcomes_opening_lead(auction, lead_card_indexes, aceking)
         # [ben-why] the layouts DOUBLE DUMMY ACTUALLY SOLVED. The samples list on the
         # response is not this: it is truncated to sample_hands_for_review (20) purely so
         # a human can look at a few, and reading n= off it understated 200 solves as 20.
@@ -454,15 +469,16 @@ class BotLead:
             tricks = np.zeros((0, len(lead_card_indexes), 2))
         elif self.models.double_dummy:
             with PlayClock.stage('dd'):
-                tricks = self.double_dummy_estimates(lead_card_indexes, contract, accepted_samples)
+                tricks, lead_card_indexes = self.double_dummy_estimates(lead_card_indexes, contract, accepted_samples)
         else:
             with PlayClock.stage('dd'):
-                tricks = self.single_dummy_estimates(lead_card_indexes, contract, accepted_samples)
+                tricks = self.single_dummy_estimates(lead_card_indexes, contract, accepted_samples)
+                # single dummy solves nothing, so there is nothing to truncate
         
         if self.verbose:
             print(f'simulate_outcomes_opening_lead took {(time.time() - t_start):0.4f}')
 
-        return accepted_samples, sorted_scores, tricks, p_hcp, p_shp, quality
+        return accepted_samples, sorted_scores, tricks, p_hcp, p_shp, quality, lead_card_indexes
 
     def double_dummy_estimates(self, lead_card_indexes, contract, accepted_samples):
         #print("double_dummy_estimates",lead_card_indexes)
@@ -474,7 +490,22 @@ class BotLead:
         tricks_needed = 13 - (level + 6) + 1
 
         t_start = time.time()
+        # A BUDGET FOR THE LEAD (2026-10-06).
+        #
+        # Every candidate lead is solved over all the layouts separately, so the cost is
+        # the number of candidates times the number of layouts - which is why the opening
+        # lead is the most expensive decision BEN makes. The budget stops the loop and
+        # TRUNCATES the candidate list to what was finished, rather than leaving unsolved
+        # candidates sitting at zero tricks: a zero is not "unknown", it is "terrible",
+        # and it would quietly make the cheapest candidates look like the best ones.
+        #
+        # One candidate is always solved, whatever the budget, so a lead is always made.
+        _budget = getattr(self.models, 'lead_budget_seconds', 0.0) or 0.0
+        _kept = list(lead_card_indexes)
         for j, lead_card_i in enumerate(lead_card_indexes):
+            if _budget > 0 and j > 0 and (time.time() - t_start) >= _budget:
+                _kept = list(lead_card_indexes[:j])
+                break
             # Subtract the opening lead from the hand
             lead_hand = self.hand52[0]
             # So now we need to figure out what the lead was if a pip
@@ -514,7 +545,7 @@ class BotLead:
 
             if self.verbose:
                 print(f'dds took: {(time.time() - t_start):0.4f}')
-        return tricks
+        return tricks, _kept
 
     def single_dummy_estimates(self, lead_card_indexes, contract, accepted_samples):
         t_start = time.time()

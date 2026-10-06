@@ -149,7 +149,26 @@ def _tail(items):
     return out
 
 
-def log_lead(result, seat, contract, hand, lead_accept_nn=None):
+def _replay(d):
+    """
+    EVERYTHING NEEDED TO ASK THE SAME QUESTION AGAIN (2026-10-06).
+
+    A line that says which card was chosen but not from what cannot be argued with. With
+    hand, dummy, played and the auction, any decision on any line can be replayed against
+    /play or /lead exactly as it was made - which is how the two positions in this
+    branch's brief were re-run before and after.
+    """
+    if not d:
+        return ''
+    bits = []
+    for key in ('hand', 'dummy', 'played', 'ctx', 'vul', 'dealer'):
+        v = d.get(key)
+        if v:
+            bits.append('%s=%s' % (key, _clean(v)))
+    return (' :: ' + ' '.join(bits)) if bits else ''
+
+
+def log_lead(result, seat, contract, hand, lead_accept_nn=None, replay=None):
     """
     [ben-why] lead - one line for an opening lead.
 
@@ -186,12 +205,12 @@ def log_lead(result, seat, contract, hand, lead_accept_nn=None):
 
         print('[ben-why] lead rid=%s seat=%s contract=%s hand=%s card=%s rule=%s %s q=%s :: %s' % (
             w['rid'], seat, contract or '-', hand or '-', _clean(result.get('card')),
-            rule, nfield, _clean(result.get('quality')), _tail(parts)), flush=True)
+            rule, nfield, _clean(result.get('quality')), _tail(parts) + _replay(replay)), flush=True)
     except Exception:
         pass
 
 
-def log_play(result, seat, trick_i, path):
+def log_play(result, seat, trick_i, path, replay=None):
     """
     [ben-why] play - one line for a card in the play.
 
@@ -254,7 +273,7 @@ def log_play(result, seat, trick_i, path):
             pimc_state, f.get('playouts', '-'), nfield,
             _clean(result.get('quality') if isinstance(result, dict) else None),
             _tail(parts) or '(no candidates)',
-            (' :: drop<%s=%s' % (_n(thr, 3), drop)) if drop else ''), flush=True)
+            ((' :: drop<%s=%s' % (_n(thr, 3), drop)) if drop else '') + _replay(replay)), flush=True)
     except Exception:
         pass
 

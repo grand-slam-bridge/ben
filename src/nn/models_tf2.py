@@ -247,6 +247,16 @@ class Models:
         self.reward_lead_partner_suit = reward_lead_partner_suit
         self.trump_lead_penalty = trump_lead_penalty
 
+    # ---- net fallback and time budget (2026-10-06) ----
+    # Neutral by default: no minimum, no budget, net-only off. A Models built without
+    # these keys therefore behaves exactly as it did before they existed.
+    card_min_layouts = 0
+    card_min_quality = 0.0
+    card_budget_seconds = 0.0
+    lead_budget_seconds = 0.0
+    card_net_only = False
+    lead_net_only = False
+
     def warm_up(self):
         """Run dummy predictions to trigger TensorFlow JIT compilation for player models."""
         import numpy as np
@@ -600,7 +610,10 @@ class Models:
         if verbose:
             print(f"loaded {len(player_models)} player models")
 
-        return cls(
+        # Read on the instance rather than through the constructor: the signature
+        # above is already enormous and six more positional arguments is where a
+        # mis-ordered call becomes a silent wrong setting.
+        built = cls(
             name=name,
             tf_version=tf_version,
             model_version=model_version,
@@ -736,6 +749,14 @@ class Models:
             play_verbose=play_verbose,
             bidding_verbose=bidding_verbose
         )
+
+        built.card_min_layouts = conf.getint('cardplay', 'card_min_layouts', fallback=0)
+        built.card_min_quality = conf.getfloat('cardplay', 'card_min_quality', fallback=0.0)
+        built.card_budget_seconds = conf.getfloat('cardplay', 'card_budget_seconds', fallback=0.0)
+        built.lead_budget_seconds = conf.getfloat('cardplay', 'lead_budget_seconds', fallback=0.0)
+        built.card_net_only = conf.getboolean('cardplay', 'card_net_only', fallback=False)
+        built.lead_net_only = conf.getboolean('cardplay', 'lead_net_only', fallback=False)
+        return built
 
     @property
     def search_threshold(self):

@@ -1333,7 +1333,8 @@ def lead():
         # Before the details=false strip below - which is what the site asks for, and which
         # removes the candidates and the samples this line is made of.
         _log('lead', result, seat, bidding.get_contract(auction), hand,
-             getattr(models, 'lead_accept_nn', None))
+             getattr(models, 'lead_accept_nn', None),
+             {'hand': hand, 'ctx': ctx, 'vul': v, 'dealer': dealer})
         if not details:
             if "candidates" in result: del result["candidates"]
             if "samples" in result: del result["samples"]
@@ -1505,7 +1506,9 @@ def play():
         _log('note', playouts=PlayClock.get()['playouts'])
         print("Playing:", card_resp.card.symbol(), msg)
         result = card_resp.to_dict()
-        _log('play', result, seat, len(cards) // 4 + 1, msg)
+        _log('play', result, seat, len(cards) // 4 + 1, msg,
+             {'hand': hand_str, 'dummy': dummy_str, 'played': played, 'ctx': ctx,
+              'vul': v, 'dealer': dealer})
         if not details:
             if "candidates" in result: del result["candidates"]
             if "samples" in result: del result["samples"]

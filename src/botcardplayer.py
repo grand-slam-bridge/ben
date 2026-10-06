@@ -45,6 +45,11 @@ def _why(method, *args, **kwargs):
     except Exception:
         pass
 
+
+# Layouts per timed solve. Small enough to stop near the budget, large enough that
+# the per-call overhead stays a rounding error against the solve itself.
+DDS_BUDGET_CHUNK = 25
+
 init()
 class CardPlayer:
 
@@ -499,6 +504,21 @@ class CardPlayer:
         if self.verbose:
             print(f'Next card response time: {time.time() - t_start:0.4f}')
 
+        # THE NET DECIDES THIS CARD, AND NOTHING IS SOLVED (2026-10-06).
+        #
+        # Checked here, before the sampling is turned into layouts, so a card the solver
+        # was never going to be trusted on costs nothing at all. The other half - did the
+        # time budget leave enough layouts behind - can only be known after the solve,
+        # and is checked where the evaluation comes back.
+        _n_layouts = players_states[0].shape[0]
+        _why('note', layouts=int(_n_layouts), quality=quality)
+        self.last_solved_layouts = _n_layouts
+        _reason = self.net_fallback_reason(_n_layouts, quality)
+        if _reason:
+            return self.pick_card_from_net(trick_i, current_trick52, tricks52,
+                                           card_scores_nn, samples, quality,
+                                           play_status, _reason)
+
         card_resp_alphamju = []
         if self.models.alphamju_declaring and (self.player_i == 1 or self.player_i == 3) and trick_i > self.models.alphamju_trick and play_status != "Discard":
             card_resp, card_resp_alphamju = self.alphamju_evaluation(trick_i, play_status,leader_i,current_trick52,quality,worlds, samples, card_scores_nn)
@@ -572,6 +592,14 @@ class CardPlayer:
                     ben_timer = 'ben_declaring' if (self.player_i == 1 or self.player_i == 3) else 'ben_defending'
                     with ModelTimer.time_call(ben_timer):
                         dd_resp_cards, claims = self.get_cards_dd_evaluation(trick_i, leader_i, tricks52, current_trick52, players_states, probability_of_occurence, quality)
+                    # THE BUDGET MAY HAVE LEFT TOO LITTLE TO DECIDE ON (2026-10-06).
+                    # The pre-solve check only knew how many layouts were SAMPLED; this
+                    # one knows how many were actually SOLVED before the clock ran out.
+                    _after = self.net_fallback_reason(self.last_solved_layouts, quality)
+                    if _after:
+                        return self.pick_card_from_net(trick_i, current_trick52, tricks52,
+                                                       card_scores_nn, samples, quality,
+                                                       play_status, _after + " after budget")
                     self.update_with_alphamju(card_resp_alphamju, dd_resp_cards)
                     card_resp = self.pick_card_after_dd_eval(trick_i, leader_i, current_trick52, tricks52, players_states, dd_resp_cards, bidding_scores, quality, samples, play_status, self.missing_cards, claims, shown_out_suits, card_scores_nn)
 
@@ -588,6 +616,95 @@ class CardPlayer:
                 merged_card_resp[card52] = (*values[:-1], updated_msg)
 
     @timed_stage('dd')
+    # -----------------------------------------------------------------------
+    # NET FALLBACK AND TIME BUDGET (2026-10-06)
+    #
+    # The solver is trusted where its evidence is good and the play net where it is
+    # not. Either test failing is enough: too FEW layouts, or layouts that fit the
+    # auction too badly. A card decided from eleven ill-fitting layouts is not a
+    # calculation, it is a calculation-shaped guess, and the net is the better guess.
+    #
+    # At the neutral values - 0 layouts, 0 quality, 0 budget, net-only off - every
+    # method here either does nothing or does exactly what the old code did.
+    # -----------------------------------------------------------------------
+
+    def legal_cards52(self, current_trick52):
+        """Cards this player may legally play, as 0-51 codes."""
+        held = [c for c in range(52) if self.hand52[c] > 0]
+        if current_trick52:
+            led = current_trick52[0] // 13
+            follow = [c for c in held if c // 13 == led]
+            if follow:
+                return follow
+        return held
+
+    def net_fallback_reason(self, n_layouts, quality):
+        """
+        Why the net should decide this card, or None to let the solver decide.
+
+        Returned as text because it goes straight onto the [ben-why] line: "which rule
+        chose" is the first thing anybody asks of a card they disagree with.
+        """
+        if getattr(self.models, 'card_net_only', False):
+            return "net-only"
+        need_n = getattr(self.models, 'card_min_layouts', 0) or 0
+        need_q = getattr(self.models, 'card_min_quality', 0.0) or 0.0
+        if need_n and n_layouts < need_n:
+            return "net-fallback (n=%d < %d)" % (n_layouts, need_n)
+        if need_q and quality is not None and quality < need_q:
+            return "net-fallback (q=%.2f < %.2f)" % (quality, need_q)
+        return None
+
+    def pick_card_from_net(self, trick_i, current_trick52, tricks52, card_scores_nn,
+                           samples, quality, play_status, why):
+        """
+        The card the play net likes best, with no solving at all.
+
+        Ties go to the LOWEST card: card52 counts down from the ace within a suit, so a
+        bigger code is a smaller card, and preferring it keeps the net from throwing an
+        honour when it rates two cards the same.
+        """
+        card_nn = {c: round(float(s), 3) for c, s in zip(np.arange(self.models.n_cards_play), card_scores_nn)}
+        candidates = []
+        for card52 in self.legal_cards52(current_trick52):
+            card32 = deck52.card52to32(card52)
+            insta = self.get_nn_score(card32, card52, card_nn, play_status, tricks52)
+            candidates.append(CandidateCard(
+                card=Card.from_code(card52), insta_score=insta, msg=why))
+        candidates.sort(key=lambda c: (-(c.insta_score or 0), -c.card.code()))
+        return CardResp(card=candidates[0].card, candidates=candidates, samples=samples,
+                        shape=-1, hcp=-1, quality=quality, who=why, claim=-1)
+
+    def solve_within_budget(self, leader_i, current_trick52, hands_pbn, budget):
+        """
+        Solve layouts until the budget is gone. Returns (results, layouts_solved).
+
+        Chunked rather than all-at-once, because DDSolver.solve takes the whole batch
+        and only returns when every layout is done - there is no way to stop it part
+        way. A chunk is the smallest unit that can be timed, and one chunk is always
+        solved, so a budget far too small still decides from something.
+
+        budget <= 0 solves the lot in a single call, which is byte-for-byte the old
+        behaviour including the one solve.
+        """
+        if not budget or budget <= 0:
+            return self.dds.solve(self.strain_i, leader_i, current_trick52, hands_pbn, 3,
+                                  purpose="play"), len(hands_pbn)
+        merged = {}
+        solved = 0
+        started = time.time()
+        for i in range(0, len(hands_pbn), DDS_BUDGET_CHUNK):
+            part = hands_pbn[i:i + DDS_BUDGET_CHUNK]
+            got = self.dds.solve(self.strain_i, leader_i, current_trick52, part, 3, purpose="play")
+            if not got:
+                break
+            for card, scores in got.items():
+                merged.setdefault(card, []).extend(scores)
+            solved += len(part)
+            if time.time() - started >= budget:
+                break
+        return merged, solved
+
     def get_cards_dd_evaluation(self, trick_i, leader_i, tricks52, current_trick52, players_states, probabilities_list, bidding_quality):
         
         n_samples = players_states[0].shape[0]
@@ -666,7 +783,13 @@ class CardPlayer:
         if self.verbose:
             print("Samples:", n_samples, " Solving:",len(hands_pbn))
         
-        dd_solved = self.dds.solve(self.strain_i, leader_i, current_trick52, hands_pbn, 3, purpose="play")
+        dd_solved, _solved_layouts = self.solve_within_budget(
+            leader_i, current_trick52, hands_pbn,
+            getattr(self.models, 'card_budget_seconds', 0.0))
+        # What the card actually rests on, which after a budget cut is fewer than were
+        # sampled. play_card reads it back to decide whether that is still enough.
+        self.last_solved_layouts = _solved_layouts
+        _why('note', layouts=int(_solved_layouts))
         
         # if defending the target is another
         level = int(self.contract[0])
