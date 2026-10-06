@@ -799,7 +799,11 @@ def _ben_slow(kind, path, total_ms, wait_ms, c):
             return
         w = Why.get()
         stages = {'sampling': c['sampling'], 'dd': c['dd'], 'pimc': c['pimc']}
-        worst = max(stages, key=lambda k: stages[k])
+        # A bid has no stage clock, and so does a card whose stages all read zero - PIMC
+        # switched off leaves pimc at 0 by design. max() over a tie of zeros returns
+        # whichever key comes first and would name 'sampling' as the culprit for time it
+        # never spent, so say nothing rather than something untrue.
+        worst = max(stages, key=lambda k: stages[k]) if any(stages.values()) else '-'
         # Whatever the three stages do not account for: the softmax, the merge, the choice.
         other = max(0.0, total_ms - wait_ms - sum(stages.values()))
         print('[ben-slow] %s rid=%s path=%s total_ms=%d wait_ms=%d sampling_ms=%d dd_ms=%d '
