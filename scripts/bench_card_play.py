@@ -166,7 +166,11 @@ class DD:
 # ---------------------------------------------------------------- BEN over HTTP
 
 class Ben:
-    def __init__(self, base, timeout=90):
+    # 90 s dropped a board: upstream lost deal 7 to "TimeoutError: timed out", and a
+    # dropped board is worse than a slow one because the settings no longer share the
+    # same deals. The slowest single card measured here was 73.7 s, and upstream is
+    # ~1.8x deployed on early cards, so 300 s leaves real headroom.
+    def __init__(self, base, timeout=300):
         self.base = base.rstrip("/")
         self.timeout = timeout
         self.calls = 0

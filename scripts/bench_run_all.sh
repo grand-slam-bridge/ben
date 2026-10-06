@@ -45,8 +45,26 @@ conf_for() {
                         pimc_stop_trick_declarer=8 pimc_stop_trick_defender=8 ;;
     pimc-off)  set_conf pimc-off pimc_use_declaring=False pimc_use_defending=False \
                         pimc_use_discarding=False ;;
+    # "the neural net alone, no search" AS FAR AS THE SETTINGS CAN EXPRESS IT (2026-10-06).
+    #
+    # It was double_dummy=False, which routes the lead through single_dummy_estimates and
+    # the sd model. THAT PATH IS DEAD IN THIS BUILD: it assembles a 165-feature vector
+    # assuming 32-card encodings - 32 + 5 + 4*32, which is exactly the sd model's input -
+    # but this config is model_version 3 with n_cards_bidding = 24, so
+    # self.handbidding.reshape(32) throws "cannot reshape array of size 24 into shape
+    # (32,)" on EVERY lead. The service answered 400 to all of them, served 0 cards, and
+    # the setting produced no result file. It is the same root cause as the two models
+    # that will not warm at start-up: sd and sd_no_lead belong to the older 32-card
+    # generation. Patching the reshape would feed the model a differently shaped world
+    # than it was trained on, which is worse than leaving it alone.
+    #
+    # So there is no working "no double dummy" card mode to select. What CAN be said with
+    # settings is: no PIMC anywhere, and the opening lead taken straight from the net -
+    # lead_accept_nn = 0 makes every lead "NN - best" and skips the simulation's verdict.
+    # Against pimc-off, which differs only in the lead, this isolates what the lead
+    # simulation is worth.
     net-alone) set_conf net-alone pimc_use_declaring=False pimc_use_defending=False \
-                        pimc_use_discarding=False double_dummy=False ;;
+                        pimc_use_discarding=False lead_accept_nn=0 ;;
     lead100)   set_conf lead100 sample_hands_opening_lead=100 ;;
   esac
 }
