@@ -1,0 +1,344 @@
+{
+ "setups": {
+  "A": {
+   "boards": 60,
+   "errors": 0,
+   "tricks_given_away_per_board": {
+    "declarer": {
+     "n": 60,
+     "mean": 0.417,
+     "sd": 0.561,
+     "se": 0.072,
+     "beyond_noise": true
+    },
+    "defence": {
+     "n": 60,
+     "mean": 0.5,
+     "sd": 0.701,
+     "se": 0.091,
+     "beyond_noise": true
+    },
+    "lead": {
+     "n": 60,
+     "mean": 0.15,
+     "sd": 0.444,
+     "se": 0.057,
+     "beyond_noise": true
+    }
+   },
+   "own_cards": {
+    "cards": 3120,
+    "unforced": 2476,
+    "calculated": 2519,
+    "on_12_layouts": 521,
+    "under_50_layouts": 1585,
+    "net_fallback": 0,
+    "seconds": 1178.9,
+    "think_ms_per_calculated": 396,
+    "nn_ms_per_calculated": 262,
+    "slowest_card_s": 7.5
+   },
+   "wall_seconds": 1203,
+   "crashes": 0,
+   "loadavg": [
+    [
+     2.42822265625,
+     2.6376953125,
+     2.5458984375
+    ],
+    [
+     7.880859375,
+     7.93017578125,
+     6.6787109375
+    ]
+   ]
+  },
+  "B": {
+   "boards": 60,
+   "errors": 0,
+   "tricks_given_away_per_board": {
+    "declarer": {
+     "n": 60,
+     "mean": 0.417,
+     "sd": 0.561,
+     "se": 0.072,
+     "beyond_noise": true
+    },
+    "defence": {
+     "n": 60,
+     "mean": 0.5,
+     "sd": 0.701,
+     "se": 0.091,
+     "beyond_noise": true
+    },
+    "lead": {
+     "n": 60,
+     "mean": 0.15,
+     "sd": 0.444,
+     "se": 0.057,
+     "beyond_noise": true
+    }
+   },
+   "tricks_against_A_per_board": {
+    "declarer": {
+     "n": 60,
+     "mean": 0.0,
+     "sd": 0.0,
+     "se": 0.0,
+     "beyond_noise": false
+    },
+    "defence": {
+     "n": 60,
+     "mean": 0.0,
+     "sd": 0.0,
+     "se": 0.0,
+     "beyond_noise": false
+    },
+    "lead": {
+     "n": 60,
+     "mean": 0.0,
+     "sd": 0.0,
+     "se": 0.0,
+     "beyond_noise": false
+    }
+   },
+   "imps_per_board_against_A": {
+    "n": 60,
+    "mean": -0.017,
+    "sd": 0.129,
+    "se": 0.017,
+    "beyond_noise": false,
+    "boards_to_settle": 241,
+    "total": -1,
+    "won": 0,
+    "lost": 1,
+    "flat": 59
+   },
+   "own_cards": {
+    "cards": 3120,
+    "unforced": 2474,
+    "calculated": 2516,
+    "on_12_layouts": 521,
+    "under_50_layouts": 1584,
+    "net_fallback": 0,
+    "seconds": 574.0,
+    "think_ms_per_calculated": 172,
+    "nn_ms_per_calculated": 37,
+    "slowest_card_s": 7.4
+   },
+   "wall_seconds": 1799,
+   "crashes": 0,
+   "baseline_repeats_itself": {
+    "checked": 3044,
+    "different": 2
+   },
+   "loadavg": [
+    [
+     2.42822265625,
+     2.6376953125,
+     2.5458984375
+    ],
+    [
+     7.17041015625,
+     7.7373046875,
+     7.2626953125
+    ]
+   ]
+  },
+  "C": {
+   "boards": 60,
+   "errors": 0,
+   "tricks_given_away_per_board": {
+    "declarer": {
+     "n": 60,
+     "mean": 0.483,
+     "sd": 0.651,
+     "se": 0.084,
+     "beyond_noise": true
+    },
+    "defence": {
+     "n": 60,
+     "mean": 0.5,
+     "sd": 0.701,
+     "se": 0.091,
+     "beyond_noise": true
+    },
+    "lead": {
+     "n": 60,
+     "mean": 0.15,
+     "sd": 0.444,
+     "se": 0.057,
+     "beyond_noise": true
+    }
+   },
+   "tricks_against_A_per_board": {
+    "declarer": {
+     "n": 60,
+     "mean": 0.067,
+     "sd": 0.312,
+     "se": 0.04,
+     "beyond_noise": false,
+     "boards_to_settle": 88
+    },
+    "defence": {
+     "n": 60,
+     "mean": 0.0,
+     "sd": 0.319,
+     "se": 0.041,
+     "beyond_noise": false
+    },
+    "lead": {
+     "n": 60,
+     "mean": 0.0,
+     "sd": 0.0,
+     "se": 0.0,
+     "beyond_noise": false
+    }
+   },
+   "imps_per_board_against_A": {
+    "n": 60,
+    "mean": -0.033,
+    "sd": 1.134,
+    "se": 0.146,
+    "beyond_noise": false,
+    "boards_to_settle": 4634,
+    "total": -2,
+    "won": 2,
+    "lost": 2,
+    "flat": 56
+   },
+   "own_cards": {
+    "cards": 3120,
+    "unforced": 2477,
+    "calculated": 2517,
+    "on_12_layouts": 507,
+    "under_50_layouts": 1558,
+    "net_fallback": 0,
+    "seconds": 1444.7,
+    "think_ms_per_calculated": 505,
+    "nn_ms_per_calculated": 338,
+    "slowest_card_s": 7.8
+   },
+   "wall_seconds": 2614,
+   "crashes": 0,
+   "baseline_repeats_itself": {
+    "checked": 2594,
+    "different": 1
+   },
+   "loadavg": [
+    [
+     2.42822265625,
+     2.6376953125,
+     2.5458984375
+    ],
+    [
+     2.78125,
+     3.86376953125,
+     5.24462890625
+    ]
+   ]
+  },
+  "D": {
+   "boards": 60,
+   "errors": 0,
+   "tricks_given_away_per_board": {
+    "declarer": {
+     "n": 60,
+     "mean": 0.933,
+     "sd": 0.954,
+     "se": 0.123,
+     "beyond_noise": true
+    },
+    "defence": {
+     "n": 60,
+     "mean": 0.817,
+     "sd": 0.833,
+     "se": 0.108,
+     "beyond_noise": true
+    },
+    "lead": {
+     "n": 60,
+     "mean": 0.15,
+     "sd": 0.444,
+     "se": 0.057,
+     "beyond_noise": true
+    }
+   },
+   "tricks_against_A_per_board": {
+    "declarer": {
+     "n": 60,
+     "mean": 0.517,
+     "sd": 0.965,
+     "se": 0.125,
+     "beyond_noise": true
+    },
+    "defence": {
+     "n": 60,
+     "mean": 0.317,
+     "sd": 0.651,
+     "se": 0.084,
+     "beyond_noise": true
+    },
+    "lead": {
+     "n": 60,
+     "mean": 0.0,
+     "sd": 0.0,
+     "se": 0.0,
+     "beyond_noise": false
+    }
+   },
+   "imps_per_board_against_A": {
+    "n": 60,
+    "mean": -2.4,
+    "sd": 4.362,
+    "se": 0.563,
+    "beyond_noise": true,
+    "total": -144,
+    "won": 3,
+    "lost": 29,
+    "flat": 28
+   },
+   "own_cards": {
+    "cards": 3120,
+    "unforced": 2473,
+    "calculated": 2490,
+    "on_12_layouts": 534,
+    "under_50_layouts": 1553,
+    "net_fallback": 1846,
+    "seconds": 1090.2,
+    "think_ms_per_calculated": 368,
+    "nn_ms_per_calculated": 252,
+    "slowest_card_s": 7.5
+   },
+   "wall_seconds": 2282,
+   "crashes": 0,
+   "baseline_repeats_itself": {
+    "checked": 1499,
+    "different": 0
+   },
+   "loadavg": [
+    [
+     2.42822265625,
+     2.6376953125,
+     2.5458984375
+    ],
+    [
+     5.0859375,
+     5.66259765625,
+     6.30712890625
+    ]
+   ]
+  }
+ },
+ "B_position_by_position": {
+  "cards": 3120,
+  "differ": 3,
+  "unforced": 2476,
+  "unforced_differ": 3,
+  "boards_with_a_difference": 3,
+  "boards": 60,
+  "wall_seconds": 591,
+  "seconds_B": 570.3,
+  "seconds_A_same_questions": 1178.9
+ }
+}
