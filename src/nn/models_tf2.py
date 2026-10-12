@@ -89,6 +89,114 @@ def Trick(model_path):
         return _get_onnx_module('Trick')(model_path)
     return TrickTF(model_path)
 
+# ---------------------------------------------------------------------------
+# BEN_MODELS = tf | onnx (2026-10-12)
+#
+# "tf", the default, is exactly what ran before: every model is the file the settings
+# name. "onnx" takes each model from models/onnx/ instead - the same networks, converted
+# by scripts/convert_all_to_onnx.py and run by ONNX Runtime. On the card-play benchmark
+# (bench/card-play-harness, 60 boards) the two chose a different card 3 times in 3,120,
+# which is what the baseline does against itself.
+#
+# A MODEL IS SWAPPED ONLY WHEN THE SETTINGS NAME THE VERY FILE ITS ONNX COPY WAS MADE
+# FROM. models/onnx holds one conversion of one set of networks; a settings file that
+# names a different bidder (gameserver.py's default.conf, an opponent file) would
+# otherwise be handed somebody else's network under its own name. Such a model stays on
+# TensorFlow and the boot line says so. So does every model if onnxruntime cannot be
+# imported, or a file is missing: the switch can leave BEN slower, never without a model.
+# ---------------------------------------------------------------------------
+_ONNX_OF = {
+    'bidder': ('bidder.onnx', 'GIB-BBO-8730_2025-04-19-E30.keras'),
+    'opponent': ('bidder.onnx', 'GIB-BBO-8730_2025-04-19-E30.keras'),
+    'info': ('bidinfo.onnx', 'GIB-BBOInfo-8730_2025-04-19-E30.keras'),
+    'contract': ('contract.onnx', 'Contract_2024-12-09-E50.keras'),
+    'trick': ('trick.onnx', 'Tricks_2024-12-09-E50.keras'),
+    'lead_suit': ('lead_suit.onnx', 'Lead-Suit_2024-11-04-E200.keras'),
+    'lead_nt': ('lead_nt.onnx', 'Lead-NT_2024-11-04-E200.keras'),
+    'single_dummy_estimator': ('single_dummy.onnx', 'SD_2024-07-08-E20.keras'),
+    'double_dummy_estimator': ('double_dummy.onnx', 'RPDD_2024-07-08-E02.keras'),
+    'lefty_nt': ('lefty_nt.onnx', 'lefty_nt_2024-07-08-E20.keras'),
+    'dummy_nt': ('dummy_nt.onnx', 'dummy_nt_2024-07-08-E20.keras'),
+    'righty_nt': ('righty_nt.onnx', 'righty_nt_2024-07-16-E20.keras'),
+    'decl_nt': ('decl_nt.onnx', 'decl_nt_2024-07-08-E20.keras'),
+    'lefty_suit': ('lefty_suit.onnx', 'lefty_suit_2024-07-08-E20.keras'),
+    'dummy_suit': ('dummy_suit.onnx', 'dummy_suit_2024-07-08-E20.keras'),
+    'righty_suit': ('righty_suit.onnx', 'righty_suit_2024-07-16-E20.keras'),
+    'decl_suit': ('decl_suit.onnx', 'decl_suit_2024-07-08-E20.keras'),
+}
+_onnx_wanted = None        # decided once, the first time a model is asked for
+_onnx_kept_tf = []         # (role, why) for every model that stayed on TensorFlow
+
+
+def _want_onnx():
+    global _onnx_wanted
+    if _onnx_wanted is None:
+        asked = (os.getenv('BEN_MODELS') or 'tf').strip().lower()
+        _onnx_wanted = False
+        if asked == 'onnx':
+            try:
+                import onnxruntime  # noqa: F401 - only to learn whether it is there
+                _onnx_wanted = True
+            except Exception as ex:
+                print('[ben-models] BEN_MODELS=onnx but onnxruntime cannot be imported (%s: %s) - using TensorFlow'
+                      % (type(ex).__name__, ex), flush=True)
+        elif asked != 'tf':
+            print('[ben-models] BEN_MODELS=%r is neither tf nor onnx - using TensorFlow' % asked, flush=True)
+    return _onnx_wanted
+
+
+def _model_file(role, configured, base_path):
+    """The file to load for this model: the one the settings name, or its ONNX copy."""
+    try:
+        if not _want_onnx() or str(configured).endswith('.onnx'):
+            return configured
+        onnx_name, made_from = _ONNX_OF.get(role, (None, None))
+        if onnx_name is None:
+            _onnx_kept_tf.append((role, 'no ONNX copy is known for it'))
+            return configured
+        if os.path.basename(str(configured)) != made_from:
+            _onnx_kept_tf.append((role, 'the settings name %s, the ONNX copy is of %s'
+                                  % (os.path.basename(str(configured)), made_from)))
+            return configured
+        candidate = os.path.join('models', 'onnx', onnx_name)
+        if not os.path.exists(os.path.join(base_path, candidate)):
+            _onnx_kept_tf.append((role, '%s is not there' % candidate))
+            return configured
+        return candidate
+    except Exception as ex:
+        _onnx_kept_tf.append((role, '%s: %s' % (type(ex).__name__, ex)))
+        return configured
+
+
+def describe_models(models):
+    """
+    [ben-models] ONE LINE AT BOOT: what was asked for, and the file behind every model.
+    A model that stayed on TensorFlow although ONNX was asked for is named with the reason.
+    """
+    try:
+        named = [('bidder', models.bidder_model), ('opponent', models.opponent_model), ('info', models.binfo_model),
+                 ('contract', models.contract_model), ('trick', models.trick_model),
+                 ('lead_suit', models.lead_suit_model), ('lead_nt', models.lead_nt_model),
+                 ('sd', models.sd_model), ('sd_no_lead', models.sd_model_no_lead)]
+        named += [(getattr(pm, 'name', 'play'), pm) for pm in (models.player_models or [])]
+        files = [(n, os.path.basename(getattr(w, 'model_path', '?'))) for n, w in named if w is not None]
+        on_onnx = sum(1 for _, f in files if f.endswith('.onnx'))
+        line = '[ben-models] in use: %d on ONNX, %d on TensorFlow (BEN_MODELS=%s' % (
+            on_onnx, len(files) - on_onnx, (os.getenv('BEN_MODELS') or 'tf'))
+        if on_onnx:
+            line += ', BEN_ONNX_THREADS=%s' % (os.getenv('BEN_ONNX_THREADS') or '2')
+        line += ') :: ' + ' '.join('%s=%s' % nf for nf in files)
+        seen = []
+        for role, reason in _onnx_kept_tf:
+            if (role, reason) not in seen:
+                seen.append((role, reason))
+        if seen:
+            line += ' :: kept on TensorFlow: ' + '; '.join('%s (%s)' % rr for rr in seen)
+        print(line, flush=True)
+    except Exception as ex:
+        print('[ben-models] could not be listed (%s: %s)' % (type(ex).__name__, ex), flush=True)
+
+
 class Models:
 
     def __init__(self, name, tf_version, model_version, n_cards_bidding, n_cards_play, bidder_model, opponent_model, contract_model, trick_model,binfo_model, lead_suit_model, lead_nt_model, sd_model, sd_model_no_lead, player_models, search_threshold, lead_threshold, 
@@ -308,6 +416,19 @@ class Models:
             with its unknown dims filled from the model where the ranks allow, then the
             signature with 1s, then the model's own shape. First one that runs, wins.
             """
+            # AN ONNX MODEL DECLARES ITS OWN INPUTS, by name, and wants 32-bit floats. A
+            # dimension it leaves open (the batch, the length of the auction or the play)
+            # is filled with 1. The lead models take two inputs and are called (x, b).
+            session = getattr(wrapper, 'session', None)
+            if session is not None:
+                made = {}
+                for inp in session.get_inputs():
+                    dims = [d if (isinstance(d, int) and d > 0) else 1 for d in inp.shape]
+                    made[inp.name] = np.zeros(dims, dtype=np.float32)
+                if 'X_input' in made and 'B_input' in made:
+                    return [[made['X_input'], made['B_input']]]
+                return [list(made.values())]
+
             sig = None
             for attr in ('pred_fun_tf', 'pred_fun_seq_tf'):
                 fn = getattr(wrapper, attr, None)
@@ -571,21 +692,21 @@ class Models:
         )
 
         path_provider = IsolatedModelPathProvider(base_temp_storage_path=auto_selected_path)
-        bidder_model = Bidder('bidder', path_provider.get_path(os.path.join(base_path, conf['bidding']['bidder'])), alert_supported=alert_supported)
+        bidder_model = Bidder('bidder', path_provider.get_path(os.path.join(base_path, _model_file('bidder', conf['bidding']['bidder'], base_path))), alert_supported=alert_supported)
         if conf.has_section('bidding') and conf.get('bidding', 'opponent', fallback=None) not in ('none', None):
-            opponent_model = Bidder('opponent', path_provider.get_path(os.path.join(base_path, conf['bidding']['opponent'])),alert_supported=alert_supported)
+            opponent_model = Bidder('opponent', path_provider.get_path(os.path.join(base_path, _model_file('opponent', conf['bidding']['opponent'], base_path))),alert_supported=alert_supported)
         else:
-            opponent_model = Bidder('opponent', path_provider.get_path(os.path.join(base_path, conf['bidding']['bidder'])),alert_supported=alert_supported)
+            opponent_model = Bidder('opponent', path_provider.get_path(os.path.join(base_path, _model_file('opponent', conf['bidding']['bidder'], base_path))),alert_supported=alert_supported)
         if verbose:
             print(f"Loaded bidding models")
-        contract_model=Contract(path_provider.get_path(os.path.join(base_path, conf['contract']['contract'])))
-        trick_model=Trick(path_provider.get_path(os.path.join(base_path, conf['contract']['trick'])))
-        binfo_model=BidInfo(path_provider.get_path(os.path.join(base_path, conf['bidding']['info'])))
+        contract_model=Contract(path_provider.get_path(os.path.join(base_path, _model_file('contract', conf['contract']['contract'], base_path))))
+        trick_model=Trick(path_provider.get_path(os.path.join(base_path, _model_file('trick', conf['contract']['trick'], base_path))))
+        binfo_model=BidInfo(path_provider.get_path(os.path.join(base_path, _model_file('info', conf['bidding']['info'], base_path))))
         if verbose:
             print(f"Loaded contract and bidding info models")
 
-        lead_suit_model=Leader(path_provider.get_path(os.path.join(base_path, conf['lead']['lead_suit'])))
-        lead_nt_model=Leader(path_provider.get_path(os.path.join(base_path, conf['lead']['lead_nt'])))
+        lead_suit_model=Leader(path_provider.get_path(os.path.join(base_path, _model_file('lead_suit', conf['lead']['lead_suit'], base_path))))
+        lead_nt_model=Leader(path_provider.get_path(os.path.join(base_path, _model_file('lead_nt', conf['lead']['lead_nt'], base_path))))
         if verbose:
             print(f"Loaded lead models")
         # sd AND sd_no_lead ARE LOADED ONLY WHEN A SETTING CAN REACH THEM (2026-10-11).
@@ -599,8 +720,8 @@ class Models:
         _load_all = os.getenv('BEN_LOAD_UNUSED_MODELS', '0') == '1'
         _need_sd = _load_all or estimator in ('sde', 'both') or not double_dummy
         _need_sd_no_lead = _load_all or estimator in ('dde', 'both')
-        sd_model = LeadSingleDummy(path_provider.get_path(os.path.join(base_path, conf['eval']['single_dummy_estimator']))) if _need_sd else None
-        sd_model_no_lead = LeadSingleDummy(path_provider.get_path(os.path.join(base_path, conf['eval']['double_dummy_estimator']))) if _need_sd_no_lead else None
+        sd_model = LeadSingleDummy(path_provider.get_path(os.path.join(base_path, _model_file('single_dummy_estimator', conf['eval']['single_dummy_estimator'], base_path)))) if _need_sd else None
+        sd_model_no_lead = LeadSingleDummy(path_provider.get_path(os.path.join(base_path, _model_file('double_dummy_estimator', conf['eval']['double_dummy_estimator'], base_path)))) if _need_sd_no_lead else None
         if not (_need_sd and _need_sd_no_lead):
             print('[ben-models] not loaded, no setting uses them:%s%s' % (
                 '' if _need_sd else ' sd', '' if _need_sd_no_lead else ' sd_no_lead'), flush=True)
@@ -608,7 +729,7 @@ class Models:
             print(f"Loaded single dummy models")
 
         player_models=[
-            BatchPlayer(name, path_provider.get_path(os.path.join(base_path, conf['cardplay'][name]))) for name in player_names
+            BatchPlayer(name, path_provider.get_path(os.path.join(base_path, _model_file(name, conf['cardplay'][name], base_path)))) for name in player_names
         ]
 
         if verbose:

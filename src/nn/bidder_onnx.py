@@ -29,7 +29,7 @@ class Bidder:
             bids: numpy array of shape [batch, seq_len, 40]
             alerts: 0 (alert not supported in ONNX version)
         """
-        with ModelTimer.time_call('bidder'):
+        with ModelTimer.time_call('bidder', rows=x):
             x_input = np.asarray(x, dtype=np.float32)
             result = self.session.run(None, {self.input_name: x_input})
             bids = result[0]

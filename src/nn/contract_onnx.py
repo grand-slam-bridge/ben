@@ -26,7 +26,7 @@ class Contract:
         Returns:
             contract prediction
         """
-        with ModelTimer.time_call('contract'):
+        with ModelTimer.time_call('contract', rows=x):
             x_input = np.asarray(x, dtype=np.float32)
             result = self.session.run(None, {self.input_name: x_input})
         return result[0]
