@@ -26,7 +26,7 @@ class Trick:
         Returns:
             trick prediction
         """
-        with ModelTimer.time_call('trick'):
+        with ModelTimer.time_call('trick', rows=x):
             x_input = np.asarray(x, dtype=np.float32)
             result = self.session.run(None, {self.input_name: x_input})
         return result[0]

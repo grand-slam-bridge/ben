@@ -27,7 +27,7 @@ class BatchPlayer:
         Returns:
             card_logit: numpy array of shape [batch, seq_len, 32]
         """
-        with ModelTimer.time_call(f'player_{self.name}'):
+        with ModelTimer.time_call(f'player_{self.name}', rows=x):
             x_input = np.asarray(x, dtype=np.float32)
             result = self.session.run(None, {self.input_name: x_input})
         return result[0]
@@ -42,7 +42,7 @@ class BatchPlayer:
         Returns:
             result: numpy array of shape [batch, 32] (last sequence position)
         """
-        with ModelTimer.time_call(f'player_{self.name}'):
+        with ModelTimer.time_call(f'player_{self.name}', rows=x):
             x_input = np.asarray(x, dtype=np.float32)
             result = self.session.run(None, {self.input_name: x_input})
         return result[0][:, -1, :]

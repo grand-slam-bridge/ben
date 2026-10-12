@@ -35,7 +35,7 @@ class Leader:
         Returns:
             numpy array of shape [batch, 32] - probability for each card
         """
-        with ModelTimer.time_call('leader'):
+        with ModelTimer.time_call('leader', rows=x):
             # Ensure float32 (ONNX model expects float32)
             x_input = np.asarray(x, dtype=np.float32)
             b_input = np.asarray(b, dtype=np.float32)

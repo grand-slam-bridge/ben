@@ -27,7 +27,7 @@ class BidInfo:
             out_hcp_seq: numpy array of shape [batch, seq_len, 3]
             out_shape_seq: numpy array of shape [batch, seq_len, 12]
         """
-        with ModelTimer.time_call('bidinfo'):
+        with ModelTimer.time_call('bidinfo', rows=x):
             x_input = np.asarray(x, dtype=np.float32)
             results = self.session.run(None, {self.input_name: x_input})
         return results[0], results[1]

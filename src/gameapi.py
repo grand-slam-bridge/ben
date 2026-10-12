@@ -43,6 +43,7 @@ import psutil
 from gevent.pywsgi import WSGIServer
 import gevent
 import signal
+import ipaddress
 import datetime 
 import time
 
@@ -630,8 +631,13 @@ except KeyError:
         # Default to version 1. of Tensorflow
         from nn.models_tf2 import Models
 
-models = Models.from_conf(configuration, config_path.replace(os.path.sep + "src",""), verbose)
-    
+# THE MODELS ARE BUILT ONCE, BELOW (2026-10-12). They used to be built here as well, and
+# that first set was thrown away: nothing between this line and the second build ever
+# read it, and the second always ran after an opponent file - which can change which
+# models are named - had been applied. So the first was a full load of every network at
+# every boot for nothing, and for a moment two copies of all of them in memory. The one
+# thing it did that the second did not was pass `verbose`, which only prints.
+
 print("Config:", configfile)
 if opponentfile != "":
     # Override with information from opponent file
@@ -641,6 +647,12 @@ if opponentfile != "":
     sys.stderr.write(f"Expecting opponent: {opponents.name}\n")
 
 models = Models.from_conf(configuration, config_path.replace(os.path.sep + "src",""))
+try:
+    # [ben-models] which file is behind every model, and whether it is ONNX or TensorFlow.
+    from nn.models_tf2 import describe_models
+    describe_models(models)
+except Exception as _describe_ex:
+    print('[ben-models] could not be listed (%s)' % _describe_ex, flush=True)
 
 # Enable model timing for performance analysis
 ModelTimer.enabled = True
@@ -755,6 +767,36 @@ limiter = Limiter(
                                # For production with multiple workers, use Redis or Memcached:
                                # "redis://localhost:6379"
 )
+# ---------------------------------------------------------------------------
+# THE SITE'S OWN SERVER IS NOT RATE-LIMITED (2026-10-12)
+#
+# The limits above are per caller address: 100 a minute on every route. They are there
+# for strangers. But the table server is ONE address for every table on the site, and it
+# asks /explain for each of the calls a player could make every time a robot bids - about
+# twenty-eight requests a turn - so a few tables in their auctions are past a hundred a
+# minute between them, and from then on BEN answers the site "Rate limit exceeded".
+# (/play was already exempt for private addresses, by its own decorator; the rest were not.)
+#
+# So a caller on the private network is exempt from every limit - and ONLY one that
+# reached this process directly. A request that came in through a proxy also arrives
+# from a private address, the proxy's, with the real caller named in X-Forwarded-For;
+# treating that as "internal" would exempt the whole internet. So a request carrying
+# X-Forwarded-For is never exempt here, whatever address it arrives from. The site's
+# server, calling BEN by its private address, carries none.
+#
+# Everyone else is limited exactly as before.
+# ---------------------------------------------------------------------------
+def _limit_exempt():
+    try:
+        if request.headers.get('X-Forwarded-For'):
+            return False
+        return ipaddress.ip_address(request.remote_addr or '').is_private
+    except Exception:
+        return False
+
+
+limiter.request_filter(_limit_exempt)
+
 # Initialize the lock
 model_lock_bid = Lock()
 model_lock_play = Lock()
@@ -2322,6 +2364,16 @@ def extract_from_pbn(cards, strain_i):
 # Optional: Custom error handler for rate limit exceeded (HTTP 429)
 @app.errorhandler(429)
 def ratelimit_handler(e):
+    # [ben-limit] ONE LINE EVERY TIME A REQUEST IS REFUSED. It used to leave no trace here
+    # at all: the caller got the 429 and this log said nothing. forwarded= is the first
+    # address in X-Forwarded-For, or "-" for a request that came direct.
+    try:
+        print('[ben-limit] refused path=%s rid=%s from=%s forwarded=%s limit=%s' % (
+            request.path, _ben_rid(), request.remote_addr or '-',
+            (request.headers.get('X-Forwarded-For') or '-').split(',')[0].strip(),
+            str(e.description).replace(' ', '_')), flush=True)
+    except Exception:
+        pass
     # The `e.description` will contain the limit that was hit.
     return jsonify(error="Rate limit exceeded. Please try again later.", limit=e.description), 429
 

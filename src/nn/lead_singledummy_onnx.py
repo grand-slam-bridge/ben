@@ -26,7 +26,7 @@ class LeadSingleDummy:
         Returns:
             result: numpy array of shape [batch, 14]
         """
-        with ModelTimer.time_call('single_dummy'):
+        with ModelTimer.time_call('single_dummy', rows=x):
             x_input = np.asarray(x, dtype=np.float32)
             result = self.session.run(None, {self.input_name: x_input})
         return result[0]
