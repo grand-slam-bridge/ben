@@ -466,6 +466,7 @@ class CardPlayer:
         #print(f'{Fore.YELLOW}Play card for player {self.player_i}{Fore.RESET}')
         t_start = time.time()
         samples = []
+        _t_review = time.perf_counter()          # [robot-time] review_ms, see gameapi._robot_time
 
         # Pre-convert scores to plain Python to avoid numpy scalar overhead in loop
         n_review = min(self.sample_hands_for_review, players_states[0].shape[0])
@@ -491,6 +492,8 @@ class CardPlayer:
                 discard_scores_list[i]
             ))
         
+        PlayClock.add('review', time.perf_counter() - _t_review)
+
         if quality < 0.1 and self.verbose:
             print("Bad Samples:")
             print(samples)
@@ -1031,6 +1034,7 @@ class CardPlayer:
             print("Trump adjust", trump_adjust)
         return trump_adjust
 
+    @timed_stage('pick')
     def pick_card_after_pimc_eval(self, trick_i, leader_i, current_trick, tricks52,  players_states, card_dd, bidding_scores, quality, samples, play_status, missing_cards, claim, shown_out_suits, card_scores_nn):
         bad_play = []
         claim_cards, claim_tricks = claim
@@ -1172,6 +1176,7 @@ class CardPlayer:
 
         return card_nn.get(card32, 0)
 
+    @timed_stage('pick')
     def pick_card_after_dd_eval(self, trick_i, leader_i, current_trick, tricks52, players_states, card_dd, bidding_scores, quality, samples, play_status, missing_cards, claim, shown_out_suits, card_scores_nn):
         bad_play = []
         # print(f"Claim cards before check: {claim}")
