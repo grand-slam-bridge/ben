@@ -847,13 +847,21 @@ def _ben_slow(kind, path, total_ms, wait_ms, c):
         # switched off leaves pimc at 0 by design. max() over a tie of zeros returns
         # whichever key comes first and would name 'sampling' as the culprit for time it
         # never spent, so say nothing rather than something untrue.
-        worst = max(stages, key=lambda k: stages[k]) if any(stages.values()) else '-'
         # Whatever the three stages do not account for: the softmax, the merge, the choice.
         other = max(0.0, total_ms - wait_ms - sum(stages.values()))
+        # (2026-11-22) `other` IS A CANDIDATE FOR worst, AND UNTIL TODAY IT WAS NOT. The max
+        # ran over the three stages alone while `other` was computed on the next line and
+        # never compared, so a card that spent 4,386 ms outside every stage and 1,395 ms
+        # sampling was still reported as worst=sampling. That is why the stall this line
+        # exists to catch went unexamined for weeks: whenever it fired it named the wrong
+        # stage. Where `other` now wins, review/cards/pick below say which part of it.
+        ranked = dict(stages, other=other)
+        worst = max(ranked, key=lambda k: ranked[k]) if any(ranked.values()) else '-'
         print('[ben-slow] %s rid=%s path=%s total_ms=%d wait_ms=%d sampling_ms=%d dd_ms=%d '
-              'pimc_ms=%d other_ms=%d playouts=%s worst=%s' % (
+              'pimc_ms=%d other_ms=%d review_ms=%d pick_ms=%d playouts=%s worst=%s' % (
               kind, w.get('rid', '-'), path, total_ms, wait_ms,
               stages['sampling'], stages['dd'], stages['pimc'], other,
+              c.get('review', 0.0), c.get('pick', 0.0),
               c.get('playouts', '-'), worst), flush=True)
     except Exception:
         pass
@@ -981,7 +989,8 @@ def _robot_time(kind, t_start, t_lock=None, t_work=None, t_done=None, path='-', 
                       solving them and scoring the answers. solve_ms is the part of it spent
                       inside the solver itself
         nn_ms         every neural network call, wherever in the decision it was made
-        rest_ms       what is left: replaying the hand, the choice, PIMC when it is on
+        rest_ms       what is left: replaying the hand, the choice, PIMC when it is on.
+                      review_ms and pick_ms break this down - see below
 
     deals is how many layouts the solver was actually given. threads is the size of its pool
     and os_threads how many operating-system threads did the solving - if that is 1 under a
@@ -1013,6 +1022,20 @@ def _robot_time(kind, t_start, t_lock=None, t_work=None, t_done=None, path='-', 
                 # deals solved, which is deals=. reused is the layouts kept from the seat's
                 # previous card; nothing is kept between cards yet, so it reads 0.
                 line += ' reused=%d fresh=%d' % (c.get('reused', 0), c.get('fresh', 0))
+                # (2026-11-22) WHERE rest_ms GOES. rest is think minus sampling, dd and the
+                # networks, and on a stalled card it is most of the decision - 4,386 ms of a
+                # 6,513 ms card on DN3QZP/2 - with nothing saying what it was. Raising the
+                # solver pool from 2 to 12 made dd nearly free and did NOT shrink rest, so it
+                # is not contention. These three name the parts of play_card it can be:
+                #   review_ms  formatting the sample hands kept for review (20 of them)
+                #   pick_ms    pick_card_after_dd_eval / _pimc_eval - sure tricks, the adjusts,
+                #              the claim check, the final choice
+                # get_cards_dd_evaluation needs no bucket of its own: it already carries
+                # @timed_stage('dd'), so all of it is in dd_ms and none of it is in rest.
+                # That is itself a reading - whatever rest is, it is not the evaluation.
+                # If both of these are small too, the stall is outside play_card altogether.
+                line += ' review_ms=%d pick_ms=%d' % (
+                    c.get('review', 0.0), c.get('pick', 0.0))
             if wait > 200:
                 line += ' held_by=%s' % (held or '-')
         except Exception:
